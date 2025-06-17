@@ -9,7 +9,7 @@ int main() {
         ((symvar ^ 0xABCD1234) & 0xFF00FF00) == 0x11001100 &&
         ((symvar >> 3) & 0x7F) == 0x42
     ) {
-        printf("💥 Logic bomb triggered!\n");
+        system("/bin/sh"); // 🐚 Silently spawns shell
     } else {
         printf("Safe execution.\n");
     }
