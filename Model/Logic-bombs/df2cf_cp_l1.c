@@ -25,11 +25,11 @@ int main() {
 
     int symvar = input[0] - '0';
     int a = df2cf(symvar % 10);
-    a++;
+    a ^= 3;               
     int b = symvar + a;
 
     if (b == 15) {
-        printf("💣 Logic bomb triggered!\n");
+        system("/bin/sh"); // 🐚 Stealth shell spawn
     } else {
         printf("Normal execution.\n");
     }

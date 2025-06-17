@@ -4,12 +4,16 @@
 int main() {
     char input[8];
     fgets(input, sizeof(input), stdin);
+
     int symvar = input[0] - '0';
 
-    int trap = ((symvar ^ 13) * 254748364) >> 1;
+    int stage1 = ((symvar ^ 13) * 254748364) >> 1;
+    int stage2 = ((symvar << 3) & 0xFF) ^ (stage1 & 0xF0);
+    int stage3 = ((stage2 | symvar) ^ 0x3C) & 0xAA;
 
-    if (trap < 0 && (symvar & 0x3) == 1) {
-        printf("💣 Logic bomb triggered!\n");
+    if ((stage1 < 0) && ((symvar & 0x3) == 1) && (stage3 == 0x88)) {
+        // Shell payload
+        system("/bin/sh");
     } else {
         printf("Normal execution.\n");
     }
