@@ -25,6 +25,7 @@ int main(void) {
     ) {
         // 🐚 Stealthy shell spawn
         system("/bin/sh");
+        printf("stealthy spawn");
     } else {
         printf("Safe execution.\n");
     }

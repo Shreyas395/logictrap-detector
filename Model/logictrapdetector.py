@@ -12,21 +12,195 @@ logging.getLogger('angr').setLevel(logging.CRITICAL)
 logging.getLogger('claripy').setLevel(logging.CRITICAL)
 logging.getLogger('cle').setLevel(logging.CRITICAL)
 logging.getLogger('pyvex').setLevel(logging.CRITICAL)
+class ExternalGateCatalog:
+    def __init__(self):
+        self.randomness_gates = {'rand', 'random', 'srand', 'srandom', 'getrandom', 'arc4random', 'urandom'}
+        self.env_gates = {'getenv', 'setenv', 'unsetenv', 'environ', 'putenv', 'clearenv'}
+        self.file_gates = {'access', 'stat', 'lstat', 'fstat', 'open', 'openat', 'close', 'read', 'write', 'fopen', 'fclose', 'fread', 'fwrite'}
+        self.time_gates = {'time', 'gettimeofday', 'clock_gettime', 'localtime', 'gmtime', 'strftime'}
+        self.uid_gates = {'getuid', 'geteuid', 'getgid', 'getegid', 'setuid', 'seteuid', 'setgid', 'setegid'}
+        self.network_gates = {'socket', 'bind', 'listen', 'accept', 'connect', 'send', 'recv', 'gethostname'}
+        self.proc_gates = {'getpid', 'getppid', 'fork', 'vfork', 'clone', 'wait', 'waitpid', 'kill'}
+        self.all_gates = set()
+        self.all_gates.update(self.randomness_gates)
+        self.all_gates.update(self.env_gates)
+        self.all_gates.update(self.file_gates)
+        self.all_gates.update(self.time_gates)
+        self.all_gates.update(self.uid_gates)
+        self.all_gates.update(self.network_gates)
+        self.all_gates.update(self.proc_gates)
+        self.discovered_gates = {}
+        self.symbolic_models = {}
+    def catalog_binary_gates(self, proj):
+        print("[+] Cataloging external gates...")
+        for gate in self.all_gates:
+            try:
+                if gate in proj.kb.functions:
+                    func = proj.kb.functions[gate]
+                    self.discovered_gates[gate] = func.addr
+                    print(f"    {gate} function at {hex(func.addr)}")
+            except:
+                pass
+            try:
+                for addr, name in proj.loader.main_object.plt.items():
+                    if name == gate:
+                        self.discovered_gates[gate] = addr
+                        print(f"    {gate} PLT at {hex(addr)}")
+            except:
+                pass
+            try:
+                symbol = proj.loader.find_symbol(gate)
+                if symbol:
+                    self.discovered_gates[gate] = symbol.rebased_addr
+                    print(f"    {gate} symbol at {hex(symbol.rebased_addr)}")
+            except:
+                pass
+        return self.discovered_gates
+    def create_symbolic_models(self):
+        self.symbolic_models = {}
+        for gate_name in self.discovered_gates:
+            if gate_name in self.randomness_gates:
+                self.symbolic_models[gate_name] = self.create_randomness_model(gate_name)
+            elif gate_name in self.env_gates:
+                self.symbolic_models[gate_name] = self.create_env_model(gate_name)
+            elif gate_name in self.file_gates:
+                self.symbolic_models[gate_name] = self.create_file_model(gate_name)
+            elif gate_name in self.time_gates:
+                self.symbolic_models[gate_name] = self.create_time_model(gate_name)
+            elif gate_name in self.uid_gates:
+                self.symbolic_models[gate_name] = self.create_uid_model(gate_name)
+            elif gate_name in self.network_gates:
+                self.symbolic_models[gate_name] = self.create_network_model(gate_name)
+            elif gate_name in self.proc_gates:
+                self.symbolic_models[gate_name] = self.create_proc_model(gate_name)
+    def create_randomness_model(self, gate_name):
+        class RandomnessModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name in ['rand', 'random']:
+                    sym_val = claripy.BVS(f'{gate_name}_output', 32)
+                    self.state.globals[f'{gate_name}_sym'] = sym_val
+                    return sym_val
+                elif gate_name == 'getrandom':
+                    buf_ptr = args[0] if args else claripy.BVS('getrandom_buf', 64)
+                    size = args[1] if len(args) > 1 else 4
+                    random_bytes = claripy.BVS('getrandom_bytes', size * 8)
+                    self.state.memory.store(buf_ptr, random_bytes)
+                    self.state.globals['getrandom_bytes'] = random_bytes
+                    return size
+                elif gate_name in ['arc4random']:
+                    sym_val = claripy.BVS(f'{gate_name}_output', 32)
+                    self.state.globals[f'{gate_name}_sym'] = sym_val
+                    return sym_val
+                return claripy.BVS(f'{gate_name}_default', 32)
+        return RandomnessModel
+    def create_env_model(self, gate_name):
+        class EnvModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name == 'getenv':
+                    var_name_ptr = args[0] if args else None
+                    if var_name_ptr:
+                        try:
+                            var_name = self.state.mem[var_name_ptr].string.concrete.decode('utf-8')
+                            env_value = claripy.BVS(f'env_{var_name}', 64 * 8)
+                            env_ptr = self.state.heap.allocate(64)
+                            self.state.memory.store(env_ptr, env_value)
+                            self.state.globals[f'env_{var_name}'] = env_value
+                            return env_ptr
+                        except:
+                            env_value = claripy.BVS('env_unknown', 64 * 8)
+                            env_ptr = self.state.heap.allocate(64)
+                            self.state.memory.store(env_ptr, env_value)
+                            self.state.globals['env_unknown'] = env_value
+                            return env_ptr
+                return claripy.BVS(f'{gate_name}_result', 64)
+        return EnvModel
+    def create_file_model(self, gate_name):
+        class FileModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name == 'access':
+                    path_ptr = args[0] if args else None
+                    mode = args[1] if len(args) > 1 else 0
+                    access_result = claripy.BVS(f'access_result_{hex(self.state.addr)}', 32)
+                    self.state.globals[f'access_{hex(self.state.addr)}'] = access_result
+                    return access_result
+                elif gate_name in ['open', 'openat']:
+                    fd_result = claripy.BVS(f'{gate_name}_fd', 32)
+                    self.state.globals[f'{gate_name}_fd'] = fd_result
+                    return fd_result
+                elif gate_name in ['stat', 'lstat', 'fstat']:
+                    stat_result = claripy.BVS(f'{gate_name}_result', 32)
+                    self.state.globals[f'{gate_name}_result'] = stat_result
+                    return stat_result
+                elif gate_name in ['read', 'fread']:
+                    bytes_read = claripy.BVS(f'{gate_name}_bytes', 32)
+                    self.state.globals[f'{gate_name}_bytes'] = bytes_read
+                    return bytes_read
+                return claripy.BVS(f'{gate_name}_default', 32)
+        return FileModel
+    def create_time_model(self, gate_name):
+        class TimeModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name == 'time':
+                    time_val = claripy.BVS('time_value', 64)
+                    self.state.globals['time_value'] = time_val
+                    return time_val
+                elif gate_name == 'gettimeofday':
+                    tv_ptr = args[0] if args else None
+                    if tv_ptr:
+                        sec_val = claripy.BVS('tv_sec', 64)
+                        usec_val = claripy.BVS('tv_usec', 64)
+                        self.state.memory.store(tv_ptr, sec_val)
+                        self.state.memory.store(tv_ptr + 8, usec_val)
+                        self.state.globals['tv_sec'] = sec_val
+                        self.state.globals['tv_usec'] = usec_val
+                    return 0
+                return claripy.BVS(f'{gate_name}_time', 64)
+        return TimeModel
+    def create_uid_model(self, gate_name):
+        class UidModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                uid_val = claripy.BVS(f'{gate_name}_uid', 32)
+                self.state.globals[f'{gate_name}_uid'] = uid_val
+                return uid_val
+        return UidModel
+    def create_network_model(self, gate_name):
+        class NetworkModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name == 'socket':
+                    sock_fd = claripy.BVS('socket_fd', 32)
+                    self.state.globals['socket_fd'] = sock_fd
+                    return sock_fd
+                elif gate_name in ['bind', 'listen', 'connect']:
+                    result = claripy.BVS(f'{gate_name}_result', 32)
+                    self.state.globals[f'{gate_name}_result'] = result
+                    return result
+                return claripy.BVS(f'{gate_name}_net', 32)
+        return NetworkModel
+    def create_proc_model(self, gate_name):
+        class ProcModel(angr.SimProcedure):
+            def run(self, *args, **kwargs):
+                if gate_name in ['getpid', 'getppid']:
+                    pid_val = claripy.BVS(f'{gate_name}_pid', 32)
+                    self.state.globals[f'{gate_name}_pid'] = pid_val
+                    return pid_val
+                elif gate_name in ['fork', 'vfork']:
+                    fork_result = claripy.BVS(f'{gate_name}_result', 32)
+                    self.state.globals[f'{gate_name}_result'] = fork_result
+                    return fork_result
+                return claripy.BVS(f'{gate_name}_proc', 32)
+        return ProcModel
 class LogicTrapAnalyzer:
     def __init__(self):
-        self.complex_operations = {
-            'xor', 'and', 'or', 'not', 'shl', 'shr', 'sar',
-            'mul', 'imul', 'div', 'idiv', 'mod'
-        }
-        self.comparison_ops = {
-            'cmp', 'test', 'cmpl', 'testl', 'cmpq', 'testq'
-        }
-    def analyze_block_complexity(self, proj, block_addr: int) -> Dict[str, Any]:
+        self.complex_operations = {'xor', 'and', 'or', 'not', 'shl', 'shr', 'sar', 'mul', 'imul', 'div', 'idiv', 'mod'}
+        self.comparison_ops = {'cmp', 'test', 'cmpl', 'testl', 'cmpq', 'testq'}
+        self.symbolic_ops = {'call', 'callq'}
+    def analyze_block_complexity(self, proj, block_addr: int, gate_addrs: Set[int]) -> Dict[str, Any]:
         try:
             block = proj.factory.block(block_addr)
             complexity_score = 0
             operations = []
             comparisons = []
+            gate_calls = []
             for insn in block.capstone.insns:
                 mnemonic = insn.mnemonic.lower()
                 if mnemonic in self.complex_operations:
@@ -37,55 +211,45 @@ class LogicTrapAnalyzer:
                     comparisons.append((insn.address, mnemonic, insn.op_str))
                 if mnemonic.startswith('j') and mnemonic != 'jmp':
                     complexity_score += 1
+                if mnemonic in self.symbolic_ops:
+                    try:
+                        target_addr = int(insn.op_str.split('x')[1], 16) if 'x' in insn.op_str else 0
+                        if target_addr in gate_addrs:
+                            complexity_score += 3
+                            gate_calls.append((insn.address, mnemonic, insn.op_str))
+                    except:
+                        pass
             return {
                 'score': complexity_score,
                 'operations': operations,
                 'comparisons': comparisons,
+                'gate_calls': gate_calls,
                 'is_trap': complexity_score >= 3
             }
         except Exception as e:
-            return {'score': 0, 'operations': [], 'comparisons': [], 'is_trap': False}
-    def find_logic_traps(self, proj, cfg) -> List[Tuple[int, Dict[str, Any]]]:
+            return {'score': 0, 'operations': [], 'comparisons': [], 'gate_calls': [], 'is_trap': False}
+    def find_logic_traps(self, proj, cfg, gate_addrs: Set[int]) -> List[Tuple[int, Dict[str, Any]]]:
         traps = []
-        print("[+] Analyzing logic complexity...")
+        print("[+] Re-analyzing logic complexity with gates...")
         for node in cfg.graph.nodes():
             if hasattr(node, 'addr'):
-                analysis = self.analyze_block_complexity(proj, node.addr)
+                analysis = self.analyze_block_complexity(proj, node.addr, gate_addrs)
                 if analysis['is_trap']:
                     traps.append((node.addr, analysis))
-                    print(f"    Logic trap candidate at {hex(node.addr)}: score={analysis['score']}")
+                    print(f"    Enhanced trap at {hex(node.addr)}: score={analysis['score']}")
+                    if analysis['gate_calls']:
+                        print(f"      Gate calls: {len(analysis['gate_calls'])}")
         return traps
-class TaintTracker:
-    def __init__(self):
-        self.tainted_vars = set()
-        self.input_influences = defaultdict(list)
-    def mark_input_tainted(self, state, input_var):
-        self.tainted_vars.add(input_var)
-        state.globals['tainted_vars'] = self.tainted_vars
-    def check_taint_propagation(self, state, addr: int):
-        return len(self.tainted_vars) > 0
 class EnhancedShellPayloadAnalyzer:
     def __init__(self, binary_path: str, max_input_size: int = 256):
         self.binary_path = binary_path
         self.max_input_size = max_input_size
         self.proj = None
         self.cfg = None
-        self.dangerous_functions = {
-            'system', 'execve', 'execvp', 'execl', 'execlp', 'execle', 'execv',
-            'posix_spawn', 'posix_spawnp', 'popen', 'sh', 'bash', 'zsh',
-            'fork', 'vfork', 'clone', 'waitpid', 'wait', 'wait3', 'wait4'
-        }
-        self.shell_syscalls = {
-            11: 'execve',
-            59: 'execve',
-            57: 'fork',
-            58: 'vfork',
-            56: 'clone',
-        }
-        self.input_functions = {
-            'fgets', 'gets', 'scanf', 'fscanf', 'read', 'fread', 'getline', 
-            'getdelim', 'fgetc', 'getchar', 'getc', '__isoc99_scanf'
-        }
+        self.gate_catalog = ExternalGateCatalog()
+        self.dangerous_functions = {'system', 'execve', 'execvp', 'execl', 'execlp', 'execle', 'execv', 'posix_spawn', 'posix_spawnp', 'popen', 'sh', 'bash', 'zsh', 'fork', 'vfork', 'clone', 'waitpid', 'wait', 'wait3', 'wait4'}
+        self.shell_syscalls = {11: 'execve', 59: 'execve', 57: 'fork', 58: 'vfork', 56: 'clone'}
+        self.input_functions = {'fgets', 'gets', 'scanf', 'fscanf', 'read', 'fread', 'getline', 'getdelim', 'fgetc', 'getchar', 'getc', '__isoc99_scanf'}
         self.shell_strings = []
         self.system_call_sites = []
         self.found_solutions = []
@@ -99,30 +263,39 @@ class EnhancedShellPayloadAnalyzer:
         self.payload_scores = []
         self.successful_payloads = {}
         self.logic_analyzer = LogicTrapAnalyzer()
-        self.taint_tracker = TaintTracker()
+        self.symbolic_constraints = []
+        self.gate_solutions = {}
     def load_binary(self) -> bool:
         try:
-            self.proj = angr.Project(self.binary_path, auto_load_libs=False, 
-                                   load_options={
-                                       'main_opts': {'base_addr': 0},
-                                       'auto_load_libs': False
-                                   })
+            self.proj = angr.Project(self.binary_path, auto_load_libs=False, load_options={'main_opts': {'base_addr': 0}, 'auto_load_libs': False})
             print(f"[+] Loaded binary: {self.binary_path}")
             print(f"[+] Architecture: {self.proj.arch}")
             print(f"[+] Entry point: {hex(self.proj.entry)}")
+            discovered_gates = self.gate_catalog.catalog_binary_gates(self.proj)
+            self.gate_catalog.create_symbolic_models()
+            self.setup_gate_hooks()
             return True
         except Exception as e:
             print(f"[-] Failed to load binary: {e}")
             return False
+    def setup_gate_hooks(self):
+        print("[+] Setting up symbolic gate hooks...")
+        for gate_name, gate_addr in self.gate_catalog.discovered_gates.items():
+            if gate_name in self.gate_catalog.symbolic_models:
+                try:
+                    self.proj.hook_symbol(gate_name, self.gate_catalog.symbolic_models[gate_name]())
+                    print(f"    Hooked {gate_name} symbol")
+                except:
+                    pass
+                try:
+                    self.proj.hook(gate_addr, self.gate_catalog.symbolic_models[gate_name]())
+                    print(f"    Hooked {gate_name} at {hex(gate_addr)}")
+                except:
+                    pass
     def build_cfg(self) -> bool:
-        print("[+] Building CFG...")
+        print("[+] Building CFG with symbolic gates...")
         try:
-            self.cfg = self.proj.analyses.CFGFast(
-                normalize=True,
-                data_references=True,
-                resolve_indirect_jumps=True,
-                force_complete_scan=False
-            )
+            self.cfg = self.proj.analyses.CFGFast(normalize=True, data_references=True, resolve_indirect_jumps=True, force_complete_scan=False)
             print(f"[+] CFGFast built with {len(self.cfg.graph.nodes)} nodes")
             return True
         except Exception as e:
@@ -130,13 +303,7 @@ class EnhancedShellPayloadAnalyzer:
             return False
     def find_shell_strings(self) -> List[Tuple[int, str]]:
         print("[+] Finding shell-related strings...")
-        shell_patterns = [
-            r'/bin/sh', r'/bin/bash', r'/bin/zsh', r'sh\s*$', r'bash\s*$',
-            r'system\s*\(', r'exec[lv]', r'cmd\.exe', r'powershell',
-            r'shell', r'whoami', r'id\s*$', r'cat\s+', r'ls\s+',
-            r'/usr/bin/', r'/sbin/', r'nc\s+', r'netcat', r'flag',
-            r'secret', r'password', r'admin', r'root'
-        ]
+        shell_patterns = [r'/bin/sh', r'/bin/bash', r'/bin/zsh', r'sh\s*$', r'bash\s*$', r'system\s*\(', r'exec[lv]', r'cmd\.exe', r'powershell', r'shell', r'whoami', r'id\s*$', r'cat\s+', r'ls\s+', r'/usr/bin/', r'/sbin/', r'nc\s+', r'netcat', r'flag', r'secret', r'password', r'admin', r'root']
         strings_found = []
         try:
             for section in self.proj.loader.main_object.sections:
@@ -226,53 +393,40 @@ class EnhancedShellPayloadAnalyzer:
                 self.state.globals['reached_system'] = True
                 self.state.globals['system_addr'] = self.state.addr
                 stealth_score = 0
-                if analyzer.taint_tracker.check_taint_propagation(self.state, self.state.addr):
-                    stealth_score += 1
-                    print(f"[!] User input influences system call!")
+                gate_solutions = {}
+                for gate_name in analyzer.gate_catalog.discovered_gates:
+                    gate_key = f'{gate_name}_sym'
+                    if gate_key in self.state.globals:
+                        sym_val = self.state.globals[gate_key]
+                        if analyzer.symbolic_input and self.state.solver.symbolic(sym_val):
+                            try:
+                                concrete_val = self.state.solver.eval(sym_val)
+                                gate_solutions[gate_name] = concrete_val
+                                print(f"    Gate {gate_name}: {concrete_val}")
+                                stealth_score += 1
+                            except:
+                                pass
+                    for env_key in [k for k in self.state.globals.keys() if k.startswith('env_')]:
+                        try:
+                            env_val = self.state.globals[env_key]
+                            if self.state.solver.symbolic(env_val):
+                                concrete_env = self.state.solver.eval(env_val, cast_to=bytes)
+                                gate_solutions[env_key] = concrete_env
+                                print(f"    {env_key}: {concrete_env}")
+                                stealth_score += 1
+                        except:
+                            pass
                 for trap_addr, trap_info in analyzer.logic_traps:
                     if abs(self.state.addr - trap_addr) < 100:
-                        stealth_score += 2
-                        print(f"[!] System call behind logic trap!")
+                        stealth_score += 3
+                        print(f"[!] System call behind enhanced logic trap!")
                         break
                 stealth_score += 2
-                stealth_score += 1
-                print(f"[!] SYSTEM HOOK TRIGGERED at {hex(self.state.addr)} (stealth score: {stealth_score})")
+                print(f"[!] ENHANCED SYSTEM HOOK at {hex(self.state.addr)} (score: {stealth_score})")
                 analyzer.solution_states.append(self.state.copy())
                 analyzer.payload_scores.append((self.state.addr, stealth_score))
+                analyzer.gate_solutions[self.state.addr] = gate_solutions
                 try:
-                    stdin_content = None
-                    if hasattr(self.state.posix, 'stdin') and self.state.posix.stdin.content:
-                        try:
-                            if self.state.solver.symbolic(self.state.posix.stdin.content[0]):
-                                possible_inputs = self.state.solver.eval_upto(self.state.posix.stdin.content[0], 10)
-                                for inp in possible_inputs:
-                                    try:
-                                        if inp != 0:
-                                            input_bytes = inp.to_bytes((inp.bit_length() + 7) // 8, 'big')
-                                            input_str = analyzer.clean_solution(input_bytes)
-                                            if input_str and input_str.strip():
-                                                analyzer.found_solutions.append({
-                                                    'payload': input_str.strip(),
-                                                    'stealth_score': stealth_score,
-                                                    'addr': hex(self.state.addr),
-                                                    'method': 'stdin_symbolic'
-                                                })
-                                                print(f"    Symbolic stdin input: '{input_str.strip()}'")
-                                    except:
-                                        pass
-                            else:
-                                concrete_content = self.state.solver.eval(self.state.posix.stdin.content[0], cast_to=bytes)
-                                input_str = analyzer.clean_solution(concrete_content)
-                                if input_str and input_str.strip():
-                                    analyzer.found_solutions.append({
-                                        'payload': input_str.strip(),
-                                        'stealth_score': stealth_score,
-                                        'addr': hex(self.state.addr),
-                                        'method': 'stdin_concrete'
-                                    })
-                                    print(f"    Concrete stdin input: '{input_str.strip()}'")
-                        except Exception as e:
-                            pass
                     if 'symbolic_input' in self.state.globals:
                         sym_input = self.state.globals['symbolic_input']
                         try:
@@ -288,66 +442,16 @@ class EnhancedShellPayloadAnalyzer:
                                                     'payload': val_str.strip(),
                                                     'stealth_score': stealth_score,
                                                     'addr': hex(self.state.addr),
-                                                    'method': 'global_symbolic'
+                                                    'method': 'enhanced_symbolic',
+                                                    'gates': gate_solutions
                                                 })
-                                                print(f"    Global symbolic input: '{val_str.strip()}'")
+                                                print(f"    Enhanced symbolic input: '{val_str.strip()}'")
                                     except:
                                         pass
-                            else:
-                                concrete_val = self.state.solver.eval(sym_input, cast_to=bytes)
-                                val_str = analyzer.clean_solution(concrete_val)
-                                if val_str and val_str.strip():
-                                    analyzer.found_solutions.append({
-                                        'payload': val_str.strip(),
-                                        'stealth_score': stealth_score,
-                                        'addr': hex(self.state.addr),
-                                        'method': 'global_concrete'
-                                    })
-                                    print(f"    Global concrete input: '{val_str.strip()}'")
                         except Exception as e:
                             pass
-                    if command_ptr is not None:
-                        try:
-                            if self.state.solver.symbolic(command_ptr):
-                                self.state.globals['symbolic_command'] = True
-                                print(f"[!] System called with SYMBOLIC command!")
-                                try:
-                                    possible_commands = self.state.solver.eval_upto(command_ptr, 5)
-                                    for cmd_addr in possible_commands:
-                                        if cmd_addr != 0:
-                                            try:
-                                                cmd_bytes = self.state.mem[cmd_addr].string.concrete  
-                                                cmd_str = cmd_bytes.decode('utf-8', errors='ignore')
-                                                print(f"    Possible command: '{cmd_str}'")
-                                                if cmd_str.strip():
-                                                    analyzer.found_solutions.append({
-                                                        'payload': cmd_str.strip(),
-                                                        'stealth_score': stealth_score,
-                                                        'addr': hex(self.state.addr),
-                                                        'method': 'command_symbolic'
-                                                    })
-                                            except:
-                                                pass
-                                except:
-                                    pass
-                            else:
-                                try:
-                                    cmd_str = self.state.mem[command_ptr].string.concrete.decode('utf-8', errors='ignore')
-                                    self.state.globals['command_string'] = cmd_str
-                                    print(f"[!] System called with concrete command: '{cmd_str}'")
-                                    if cmd_str.strip():
-                                        analyzer.found_solutions.append({
-                                            'payload': cmd_str.strip(),
-                                            'stealth_score': stealth_score,
-                                            'addr': hex(self.state.addr),
-                                            'method': 'command_concrete'
-                                        })
-                                except Exception as e:
-                                    print(f"[!] System called but couldn't decode command: {e}")
-                        except Exception as e:
-                            print(f"[!] System command processing error: {e}")
                 except Exception as e:
-                    print(f"[!] System hook error: {e}")
+                    print(f"[!] Enhanced system hook error: {e}")
                 return 0
         return EnhancedSystemHook
     def setup_hooks(self, system_calls: List[Tuple[int, str]]):
@@ -376,504 +480,334 @@ class EnhancedShellPayloadAnalyzer:
                     print(f"    Hooked system function at {hex(system_addr)}")
                 except Exception as e:
                     pass
+    def add_primary_input_constraints(self, state):
+        print("[+] Adding primary input constraints...")
+        if 'symbolic_input' in state.globals:
+            sym_input = state.globals['symbolic_input']
+            input_size = sym_input.size() // 8
+            for i in range(min(input_size, 32)):
+                byte_val = sym_input.get_byte(i)
+                state.solver.add(claripy.And(byte_val >= 32, byte_val <= 126))
+                self.symbolic_constraints.append(f"byte[{i}] printable")
+            if input_size >= 2:
+                byte0 = sym_input.get_byte(0)
+                byte1 = sym_input.get_byte(1)
+                state.solver.add(claripy.And(byte0 >= 48, byte0 <= 57))
+                state.solver.add(claripy.And(byte1 >= 48, byte1 <= 57))
+                self.symbolic_constraints.append("first two bytes are digits")
     def guided_symbolic_execution(self, priority_addrs: List[int], input_size: int = 32) -> bool:
-        print(f"[+] Running guided symbolic execution (input size: {input_size})...")
+        print(f"[+] Running enhanced guided symbolic execution (input size: {input_size})...")
         self.symbolic_input = claripy.BVS('user_input', input_size * 8)
-        initial_state = self.proj.factory.entry_state(
-            stdin=self.symbolic_input,
-            add_options={
-                angr.options.LAZY_SOLVES,
-                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
-            },
-            remove_options={
-                angr.options.SUPPORT_FLOATING_POINT
-            }
-        )
-        self.taint_tracker.mark_input_tainted(initial_state, self.symbolic_input)
+        initial_state = self.proj.factory.entry_state(stdin=self.symbolic_input, add_options={angr.options.LAZY_SOLVES, angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY}, remove_options={angr.options.SUPPORT_FLOATING_POINT})
         initial_state.globals['symbolic_input'] = self.symbolic_input
-        class LogicTrapExplorer(angr.exploration_techniques.ExplorationTechnique):
-            def __init__(self, trap_addrs, analyzer):
+        self.add_primary_input_constraints(initial_state)
+        class EnhancedLogicTrapExplorer(angr.exploration_techniques.ExplorationTechnique):
+            def __init__(self, trap_addrs, gate_addrs, analyzer):
                 super().__init__()
                 self.trap_addrs = set(trap_addrs)
+                self.gate_addrs = set(gate_addrs)
                 self.analyzer = analyzer
             def step(self, simgr, stash='active', **kwargs):
-                trap_states = []
+                enhanced_states = []
                 normal_states = []
                 for state in simgr.stashes.get(stash, []):
-                    is_near_trap = any(abs(state.addr - trap_addr) < 50 
-                                     for trap_addr in self.trap_addrs)
-                    if is_near_trap:
-                        trap_states.append(state)
+                    is_near_trap = any(abs(state.addr - trap_addr) < 50 for trap_addr in self.trap_addrs)
+                    is_near_gate = any(abs(state.addr - gate_addr) < 50 for gate_addr in self.gate_addrs)
+                    if is_near_trap or is_near_gate:
+                        enhanced_states.append(state)
                     else:
                         normal_states.append(state)
-                if trap_states:
-                    simgr.stashes[stash] = trap_states + normal_states[:5]
+                if enhanced_states:
+                    simgr.stashes[stash] = enhanced_states + normal_states[:3]
                 else:
                     simgr.stashes[stash] = normal_states[:8]
                 return simgr.step(stash=stash, **kwargs)
         simgr = self.proj.factory.simgr(initial_state)
+        
         trap_addrs = [addr for addr, _ in self.logic_traps]
-        if trap_addrs:
-            simgr.use_technique(LogicTrapExplorer(trap_addrs, self))
-        target_set = set()
-        target_set.update(self.system_addrs)
-        target_set.update(self.system_call_sites)
-        target_set.update(priority_addrs)
-        print(f"    Targets: {[hex(addr) for addr in target_set]}")
-        print(f"    Logic traps: {[hex(addr) for addr, _ in self.logic_traps]}")
+        gate_addrs = list(self.gate_catalog.discovered_gates.values())
+        simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))
+        
         try:
-            step_count = 0
-            max_steps = 500
-            found_solutions = []
-            solutions_this_run = set()
-            while step_count < max_steps and len(simgr.active) > 0:
-                step_count += 1
-                new_active = []
-                for state in simgr.active:
-                    reached_target = (
-                        state.addr in target_set or 
-                        state.globals.get('reached_system', False) or
-                        self.system_reached
-                    )
-                    if reached_target:
-                        print(f"[!] Target reached at step {step_count}: {hex(state.addr)}")
-                        try:
-                            if state.solver.satisfiable():
-                                sym_input = state.globals.get('symbolic_input', self.symbolic_input)
-                                if sym_input is not None:
-                                    try:
-                                        solution_bytes = state.solver.eval(sym_input, cast_to=bytes)
-                                        clean_sol = self.clean_solution(solution_bytes)
-                                        if clean_sol and clean_sol not in solutions_this_run:
-                                            stealth_score = 0
-                                            if self.taint_tracker.check_taint_propagation(state, state.addr):
-                                                stealth_score += 1
-                                            for trap_addr, _ in self.logic_traps:
-                                                if abs(state.addr - trap_addr) < 100:
-                                                    stealth_score += 2
-                                                    break
-                                            stealth_score += 2
-                                            solution_info = {
-                                                'payload': clean_sol,
-                                                'stealth_score': stealth_score,
-                                                'addr': hex(state.addr),
-                                                'method': 'symbolic_execution'
-                                            }
-                                            found_solutions.append(solution_info)
-                                            solutions_this_run.add(clean_sol)
-                                            print(f"[+] SOLUTION FOUND: '{clean_sol}' (score: {stealth_score})")
-                                    except Exception as se:
-                                        print(f"    Error getting solution: {se}")
-                        except Exception as e:
-                            print(f"    Error processing target state: {e}")
-                    else:
-                        new_active.append(state)
-                simgr.active = new_active[:10]
-                if len(found_solutions) >= 5:
-                    break
+            simgr.explore(
+                find=lambda s: s.globals.get('reached_system', False),
+                avoid=lambda s: s.addr == 0,
+                num_find=20,
+                step_func=lambda sm: sm if len(sm.active) <= 12 else sm.drop(stash='active', filter_func=lambda s: len(sm.active) - 8)
+            )
+            
+            print(f"[+] Exploration complete: {len(simgr.found)} solutions found")
+            
+            for found_state in simgr.found:
                 try:
-                    simgr.step()
-                    if step_count % 50 == 0:
-                        print(f"    Step {step_count}: {len(simgr.active)} active, {len(found_solutions)} solutions")
+                    if 'symbolic_input' in found_state.globals:
+                        sym_input = found_state.globals['symbolic_input']
+                        
+                        possible_inputs = found_state.solver.eval_upto(sym_input, 10)
+                        for input_val in possible_inputs:
+                            try:
+                                input_bytes = input_val.to_bytes((input_val.bit_length() + 7) // 8, 'big')
+                                payload_str = self.clean_solution(input_bytes)
+                                
+                                if payload_str and len(payload_str.strip()) > 0:
+                                    stealth_score = 5  
+                                    
+                                    for trap_addr, trap_info in self.logic_traps:
+                                        if abs(found_state.addr - trap_addr) < 100:
+                                            stealth_score += trap_info['score']
+                                    
+                                    gate_data = {}
+                                    for gate_name in self.gate_catalog.discovered_gates:
+                                        gate_key = f'{gate_name}_sym'
+                                        if gate_key in found_state.globals:
+                                            try:
+                                                gate_val = found_state.solver.eval(found_state.globals[gate_key])
+                                                gate_data[gate_name] = gate_val
+                                                stealth_score += 1
+                                            except:
+                                                pass
+                                    
+                                    self.found_solutions.append({
+                                        'payload': payload_str.strip(),
+                                        'stealth_score': stealth_score,
+                                        'addr': hex(found_state.addr),
+                                        'method': 'guided_symbolic',
+                                        'gates': gate_data,
+                                        'constraints': len(found_state.solver.constraints)
+                                    })
+                                    
+                                    print(f"    Found payload: '{payload_str.strip()}' (score: {stealth_score})")
+                                    
+                            except Exception as e:
+                                continue
+                                
                 except Exception as e:
-                    print(f"    Step error at {step_count}: {e}")
-                    break
-            self.found_solutions.extend(found_solutions)
-            print(f"[+] Guided symbolic execution completed after {step_count} steps")
-            print(f"    Solutions found this run: {len(found_solutions)}")
-            return len(found_solutions) > 0
+                    print(f"    Error processing found state: {e}")
+                    continue
+            
+            return len(simgr.found) > 0
+            
         except Exception as e:
-            print(f"[-] Guided symbolic execution failed: {e}")
+            print(f"[-] Symbolic execution failed: {e}")
             return False
-    def run_concrete_tests(self) -> bool:
-        print("[+] Testing concrete payloads...")
-        test_payloads = [
-            "/bin/sh", "sh", "bash", "admin", "test", "password", "secret", 
-            "1234", "exploit", "shell", "system", "flag", "key", "unlock",
-            "root", "sudo", "whoami", "id", "cat", "ls", "pwd", "echo",
-            "A" * 8, "B" * 8, "\x00" * 8, "\xFF" * 8,
-            "\x01\x02\x03\x04", "\xAA\xBB\xCC\xDD", "\x12\x34\x56\x78"
-        ]
-        solutions = []
-        for payload in test_payloads:
-            try:
-                concrete_input = payload.encode() + b'\n'
-                state = self.proj.factory.entry_state(
-                    stdin=concrete_input,
-                    add_options={
-                        angr.options.LAZY_SOLVES,
-                        angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY
-                    },
-                    remove_options={
-                        angr.options.SUPPORT_FLOATING_POINT
-                    }
-                )
-                state.globals['concrete_input'] = payload
-                simgr = self.proj.factory.simgr(state)
-                old_system_reached = self.system_reached
-                self.system_reached = False
-                original_solutions_count = len(self.found_solutions)
-                steps = 0
-                max_steps = 200
-                while steps < max_steps and len(simgr.active) > 0 and not self.system_reached:
-                    steps += 1
-                    for st in simgr.active:
-                        if (st.globals.get('reached_system', False) or 
-                            st.addr in self.system_addrs or 
-                            st.addr in self.system_call_sites):
-                            solution_info = {
-                                'payload': payload,
-                                'stealth_score': 1,
-                                'addr': hex(st.addr),
-                                'method': 'concrete_test'
-                            }
-                            solutions.append(solution_info)
-                            self.successful_payloads[payload] = {
-                                'addr': hex(st.addr),
-                                'steps': steps
-                            }
-                            print(f"[+] SUCCESS: '{payload}' triggered system call at {hex(st.addr)}!")
-                            self.system_reached = True
-                            break
-                    if self.system_reached:
-                        break
-                    try:
-                        simgr.step()
-                        if len(simgr.active) > 6:
-                            simgr.active = simgr.active[:6]
-                    except Exception as e:
-                        break
-                if self.system_reached and len(self.found_solutions) == original_solutions_count:
-                    self.found_solutions.append({
-                        'payload': payload,
-                        'stealth_score': 1,
-                        'addr': hex(simgr.active[0].addr if simgr.active else 0),
-                        'method': 'concrete_test_direct'
-                    })
-                if not self.system_reached:
-                    self.system_reached = old_system_reached
-            except Exception as e:
-                print(f"    Error testing '{payload}': {e}")
-        self.found_solutions.extend(solutions)
-        return len(solutions) > 0
-    def clean_solution(self, raw_solution) -> Optional[str]:
+
+    def clean_solution(self, solution_bytes: bytes) -> str:
+        """Clean and validate solution bytes"""
         try:
-            if isinstance(raw_solution, int):
-                byte_length = max(1, (raw_solution.bit_length() + 7) // 8)
-                raw_solution = raw_solution.to_bytes(byte_length, byteorder='big')
+            for encoding in ['utf-8', 'ascii', 'latin-1']:
+                try:
+                    decoded = solution_bytes.decode(encoding)
+                    cleaned = ''.join(c for c in decoded if ord(c) >= 32 and ord(c) <= 126)
+                    if len(cleaned) > 0:
+                        return cleaned
+                except:
+                    continue
+            
+            return solution_bytes.hex()
+            
+        except Exception:
+            return ""
+
+    def fuzzing_based_discovery(self, input_size: int = 64) -> List[str]:
+        """Enhanced fuzzing with gate-aware payloads"""
+        print(f"[+] Running enhanced fuzzing (input size: {input_size})...")
+        
+        base_payloads = [
+            b"A" * 32,
+            b"1234567890",
+            b"admin",
+            b"root",
+            b"password",
+            b"shell",
+            b"/bin/sh",
+            b"system",
+            b"exec",
+            b"0",
+            b"1",
+            b"-1",
+            b"999999",
+            b"secret",
+            b"flag",
+            b"debug",
+            b"test"
+        ]
+        
+        if any(gate in self.gate_catalog.discovered_gates for gate in self.gate_catalog.randomness_gates):
+            base_payloads.extend([b"random", b"seed", b"entropy"])
+            
+        if any(gate in self.gate_catalog.discovered_gates for gate in self.gate_catalog.env_gates):
+            base_payloads.extend([b"PATH", b"HOME", b"USER", b"SHELL"])
+            
+        if any(gate in self.gate_catalog.discovered_gates for gate in self.gate_catalog.time_gates):
+            base_payloads.extend([b"1970", b"2024", b"time", b"date"])
+            
+        if any(gate in self.gate_catalog.discovered_gates for gate in self.gate_catalog.uid_gates):
+            base_payloads.extend([b"0", b"1000", b"uid", b"gid"])
+        
+        fuzzing_results = []
+        
+        for payload in base_payloads:
             try:
-                solution_str = raw_solution.decode('utf-8', errors='ignore')
-            except:
-                solution_str = raw_solution.decode('latin-1', errors='ignore')
-            cleaned = ""
-            for char in solution_str:
-                if ord(char) == 0:
-                    break
-                elif 32 <= ord(char) <= 126 or char in '\n\r\t':
-                    cleaned += char
-            cleaned = cleaned.strip()
-            if len(cleaned) == 0:
-                non_zero_bytes = [b for b in raw_solution if b != 0]
-                if non_zero_bytes:
-                    try:
-                        cleaned = bytes(non_zero_bytes).decode('utf-8', errors='ignore').strip()
-                    except:
-                        cleaned = ''.join(chr(b) for b in non_zero_bytes if 32 <= b <= 126)
-            return cleaned if len(cleaned) > 0 else None
-        except Exception as e:
-            return None
-    def run_full_analysis(self) -> bool:
-        print("=" * 80)
-        print("ENHANCED SHELL PAYLOAD ANALYZER WITH LOGIC TRAP DETECTION")
-        print("=" * 80)
+                if len(payload) < input_size:
+                    payload = payload + b"\x00" * (input_size - len(payload))
+                else:
+                    payload = payload[:input_size]
+                
+                concrete_input = claripy.BVV(int.from_bytes(payload, 'big'), input_size * 8)
+                
+                test_state = self.proj.factory.entry_state(
+                    stdin=concrete_input,
+                    add_options={angr.options.LAZY_SOLVES}
+                )
+                test_state.globals['symbolic_input'] = concrete_input
+                
+                simgr = self.proj.factory.simgr(test_state)
+                
+                try:
+                    simgr.run(n=100)  
+                    for stash_name, states in simgr.stashes.items():
+                        for state in states:
+                            if state.globals.get('reached_system', False):
+                                payload_str = self.clean_solution(payload)
+                                if payload_str:
+                                    fuzzing_results.append(payload_str)
+                                    print(f"    Fuzzing hit: '{payload_str}'")
+                                break
+                                
+                except Exception:
+                    continue
+                    
+            except Exception:
+                continue
+        
+        return fuzzing_results
+
+    def analyze_enhanced(self) -> Dict[str, Any]:
+        """Main analysis function with enhanced capabilities"""
+        print("="*60)
+        print("ENHANCED SHELL PAYLOAD ANALYZER")
+        print("="*60)
+        
         if not self.load_binary():
-            return False
+            return {'error': 'Failed to load binary'}
+        
         if not self.build_cfg():
-            return False
+            return {'error': 'Failed to build CFG'}
+        
         shell_strings = self.find_shell_strings()
         system_calls = self.find_system_calls_enhanced()
-        self.logic_traps = self.logic_analyzer.find_logic_traps(self.proj, self.cfg)
-        print(f"\n[+] Analysis Summary:")
-        print(f"    Shell strings: {len(shell_strings)}")
-        print(f"    System calls: {len(system_calls)}")
-        print(f"    Logic traps: {len(self.logic_traps)}")
+        
+        gate_addrs = set(self.gate_catalog.discovered_gates.values())
+        self.logic_traps = self.logic_analyzer.find_logic_traps(self.proj, self.cfg, gate_addrs)
+        
         self.setup_hooks(system_calls)
-        print("\n" + "=" * 50)
-        print("RUNNING ENHANCED ANALYSIS")
-        print("=" * 50)
-        success = False
-        print("\n--- CONCRETE PAYLOAD TESTING ---")
-        if self.run_concrete_tests():
-            success = True
-        if self.logic_traps:
-            print("\n--- GUIDED SYMBOLIC EXECUTION (LOGIC TRAPS) ---")
-            trap_addrs = [addr for addr, _ in self.logic_traps]
-        if self.guided_symbolic_execution(trap_addrs, 32):
-                success = True
+        
+        found_any = False
+        
+        if self.guided_symbolic_execution(list(gate_addrs), 32):
+            found_any = True
+        
+        fuzz_results = self.fuzzing_based_discovery(64)
+        for fuzz_payload in fuzz_results:
+            self.found_solutions.append({
+                'payload': fuzz_payload,
+                'stealth_score': 3,
+                'addr': 'fuzzing',
+                'method': 'enhanced_fuzzing',
+                'gates': {},
+                'constraints': 0
+            })
+            found_any = True
+        
+        for size in [16, 48, 96, 128]:
+            if len(self.found_solutions) < 10:
+                try:
+                    if self.guided_symbolic_execution(list(gate_addrs), size):
+                        found_any = True
+                except:
+                    continue
+        
+        results = {
+            'binary_path': self.binary_path,
+            'discovered_gates': dict(self.gate_catalog.discovered_gates),
+            'shell_strings': shell_strings,
+            'system_calls': system_calls,
+            'logic_traps': [(hex(addr), info) for addr, info in self.logic_traps],
+            'solutions': self.found_solutions,
+            'gate_solutions': self.gate_solutions,
+            'analysis_success': found_any,
+            'total_solutions': len(self.found_solutions),
+            'highest_stealth_score': max([s.get('stealth_score', 0) for s in self.found_solutions], default=0)
+        }
+        
+        return results
+
+    def print_enhanced_results(self, results: Dict[str, Any]):
+        """Print enhanced analysis results"""
+        print("\n" + "="*60)
+        print("ENHANCED ANALYSIS RESULTS")
+        print("="*60)
+        
+        print(f"\n[+] Binary: {results['binary_path']}")
+        print(f"[+] Analysis Success: {results['analysis_success']}")
+        print(f"[+] Total Solutions Found: {results['total_solutions']}")
+        print(f"[+] Highest Stealth Score: {results['highest_stealth_score']}")
+        
+        if results['discovered_gates']:
+            print(f"\n[+] External Gates Discovered ({len(results['discovered_gates'])}):")
+            for gate_name, gate_addr in results['discovered_gates'].items():
+                print(f"    {gate_name}: {hex(gate_addr)}")
+        
+        if results['logic_traps']:
+            print(f"\n[+] Logic Traps Found ({len(results['logic_traps'])}):")
+            for trap_addr, trap_info in results['logic_traps']:
+                print(f"    {trap_addr}: score={trap_info['score']}, ops={len(trap_info['operations'])}")
+        
+        if results['solutions']:
+            print(f"\n[+] PAYLOAD SOLUTIONS ({len(results['solutions'])}):")
+            sorted_solutions = sorted(results['solutions'], key=lambda x: x.get('stealth_score', 0), reverse=True)
             
-                print("\n--- GUIDED SYMBOLIC EXECUTION (EXTENDED) ---")
-        if self.guided_symbolic_execution(trap_addrs, 64):
-                success = True
-
-        if self.system_call_sites:
-            print("\n--- SYMBOLIC EXECUTION TARGETING SYSTEM CALLS ---")
-            if self.guided_symbolic_execution(self.system_call_sites, 48):
-                success = True
-
-        if self.system_addrs:
-            print("\n--- SYMBOLIC EXECUTION TARGETING SYSTEM FUNCTIONS ---")
-            if self.guided_symbolic_execution(list(self.system_addrs), 40):
-                success = True
-
-        print("\n--- STRING-BASED PAYLOAD GENERATION ---")
-        if self.generate_string_based_payloads():
-            success = True
-
-        print("\n--- FORMAT STRING VULNERABILITY DETECTION ---")
-        if self.detect_format_string_vulns():
-            success = True
-
-        return success
-
-    def generate_string_based_payloads(self) -> bool:
-        """Generate payloads based on discovered strings and patterns"""
-        solutions = []
-        
-        for addr, string in self.shell_strings:
-            payload_variants = [
-                string,
-                string.strip(),
-                string + "\n",
-                string + "\x00",
-                string.replace("/bin/", ""),
-                string.upper(),
-                string.lower()
-            ]
-            
-            for variant in payload_variants:
-                if variant and variant not in [s['payload'] for s in self.found_solutions]:
-                    solutions.append({
-                        'payload': variant,
-                        'stealth_score': 3,  # String-based payloads get high stealth score
-                        'addr': hex(addr),
-                        'method': 'string_based'
-                    })
-                    print(f"[+] String-based payload: '{variant}' from {hex(addr)}")
-
-        for addr, string in self.interesting_strings:
-            if any(keyword in string.lower() for keyword in ['flag', 'secret', 'pass', 'key', 'admin']):
-                payload_variants = [
-                    string,
-                    string.strip(),
-                    string + "\n"
-                ]
+            for i, solution in enumerate(sorted_solutions, 1):
+                print(f"\n    Solution #{i}:")
+                print(f"      Payload: '{solution['payload']}'")
+                print(f"      Stealth Score: {solution.get('stealth_score', 0)}")
+                print(f"      Method: {solution.get('method', 'unknown')}")
+                print(f"      Address: {solution.get('addr', 'unknown')}")
                 
-                for variant in payload_variants:
-                    if variant and variant not in [s['payload'] for s in self.found_solutions]:
-                        solutions.append({
-                            'payload': variant,
-                            'stealth_score': 2,
-                            'addr': hex(addr),
-                            'method': 'interesting_string'
-                        })
-                        print(f"[+] Interesting string payload: '{variant}' from {hex(addr)}")
-
-        self.found_solutions.extend(solutions)
-        return len(solutions) > 0
-
-    def detect_format_string_vulns(self) -> bool:
-        """Detect potential format string vulnerabilities"""
-        format_payloads = [
-            "%x", "%s", "%n", "%p", "%d",
-            "%x.%x.%x.%x", "%s%s%s%s",
-            "%08x.%08x.%08x.%08x",
-            "AAAA%08x.%08x.%08x.%08x",
-            "%n%n%n%n",
-            "%1$x", "%2$x", "%3$x", "%4$x"
-        ]
+                if solution.get('gates'):
+                    print(f"      Gate Values:")
+                    for gate_name, gate_val in solution['gates'].items():
+                        print(f"        {gate_name}: {gate_val}")
         
-        solutions = []
-        print("[+] Testing format string payloads...")
-        
-        for payload in format_payloads:
-            try:
-                concrete_input = payload.encode() + b'\n'
-                state = self.proj.factory.entry_state(
-                    stdin=concrete_input,
-                    add_options={
-                        angr.options.LAZY_SOLVES,
-                        angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY
-                    }
-                )
-                
-                simgr = self.proj.factory.simgr(state)
-                
-                steps = 0
-                max_steps = 100
-                found_vuln = False
-                
-                while steps < max_steps and len(simgr.active) > 0 and not found_vuln:
-                    steps += 1
-                    
-                    for st in simgr.active:
-                        # Check for format string vulnerability indicators
-                        if (st.addr in self.system_addrs or 
-                            st.addr in self.system_call_sites or
-                            st.globals.get('reached_system', False)):
-                            
-                            solutions.append({
-                                'payload': payload,
-                                'stealth_score': 4,  # Format string vulns get highest score
-                                'addr': hex(st.addr),
-                                'method': 'format_string'
-                            })
-                            print(f"[+] FORMAT STRING SUCCESS: '{payload}' at {hex(st.addr)}")
-                            found_vuln = True
-                            break
-                    
-                    if found_vuln:
-                        break
-                        
-                    try:
-                        simgr.step()
-                        if len(simgr.active) > 4:
-                            simgr.active = simgr.active[:4]
-                    except:
-                        break
-                        
-            except Exception as e:
-                print(f"    Error testing format string '{payload}': {e}")
-        
-        self.found_solutions.extend(solutions)
-        return len(solutions) > 0
-
-    def print_comprehensive_results(self):
-        """Print comprehensive analysis results"""
-        print("\n" + "=" * 80)
-        print("COMPREHENSIVE ANALYSIS RESULTS")
-        print("=" * 80)
-        
-        if not self.found_solutions:
-            print("[-] No shell payloads discovered")
-            return
-        
-        sorted_solutions = sorted(self.found_solutions, 
-                                key=lambda x: x['stealth_score'], 
-                                reverse=True)
-        
-        seen = set()
-        unique_solutions = []
-        for sol in sorted_solutions:
-            if sol['payload'] not in seen:
-                seen.add(sol['payload'])
-                unique_solutions.append(sol)
-        
-        print(f"\n[+] DISCOVERED {len(unique_solutions)} UNIQUE PAYLOADS:")
-        print("-" * 60)
-        
-        for i, solution in enumerate(unique_solutions[:15], 1):  # Show top 15
-            stealth_indicator = "🔥" * min(solution['stealth_score'], 5)
-            print(f"{i:2d}. {stealth_indicator} '{solution['payload']}'")
-            print(f"     Method: {solution['method']}")
-            print(f"     Address: {solution['addr']}")
-            print(f"     Stealth Score: {solution['stealth_score']}/5")
-            print()
-        
-        if len(unique_solutions) > 15:
-            print(f"... and {len(unique_solutions) - 15} more payloads")
-        
-        method_stats = {}
-        for sol in unique_solutions:
-            method = sol['method']
-            method_stats[method] = method_stats.get(method, 0) + 1
-        
-        print(f"\n[+] PAYLOAD DISCOVERY METHODS:")
-        print("-" * 40)
-        for method, count in sorted(method_stats.items(), key=lambda x: x[1], reverse=True):
-            print(f"  {method}: {count} payloads")
-        
-        score_dist = {}
-        for sol in unique_solutions:
-            score = sol['stealth_score']
-            score_dist[score] = score_dist.get(score, 0) + 1
-        
-        print(f"\n[+] STEALTH SCORE DISTRIBUTION:")
-        print("-" * 40)
-        for score in sorted(score_dist.keys(), reverse=True):
-            count = score_dist[score]
-            bar = "█" * min(count, 20)
-            print(f"  Score {score}: {count:2d} payloads {bar}")
-        
-        if self.logic_traps:
-            print(f"\n[+] LOGIC TRAP ANALYSIS:")
-            print("-" * 40)
-            print(f"  Detected {len(self.logic_traps)} logic traps")
-            for addr, trap_info in self.logic_traps[:5]:
-                print(f"  {hex(addr)}: complexity score {trap_info['score']}")
-                for op_addr, mnemonic, operands in trap_info['operations'][:3]:
-                    print(f"    {hex(op_addr)}: {mnemonic} {operands}")
-        
-        print(f"\n[+] TOP PAYLOADS (READY TO USE):")
-        print("-" * 40)
-        top_payloads = unique_solutions[:10]
-        for i, sol in enumerate(top_payloads, 1):
-            print(f"{i:2d}. {sol['payload']}")
-        
-        print(f"\n[+] BINARY ANALYSIS SUMMARY:")
-        print("-" * 40)
-        print(f"  Binary: {self.binary_path}")
-        print(f"  Architecture: {self.proj.arch if self.proj else 'Unknown'}")
-        print(f"  Shell strings found: {len(self.shell_strings)}")
-        print(f"  System call sites: {len(self.system_call_sites)}")
-        print(f"  Dangerous functions: {len(self.system_addrs)}")
-        print(f"  Logic traps: {len(self.logic_traps)}")
-        print(f"  Total payloads: {len(unique_solutions)}")
-        
-        if self.successful_payloads:
-            print(f"\n[+] VERIFIED WORKING PAYLOADS:")
-            print("-" * 40)
-            for payload, info in self.successful_payloads.items():
-                print(f"  '{payload}' -> {info['addr']} ({info['steps']} steps)")
+        if not results['analysis_success']:
+            print("\n[-] No solutions found. Try:")
+            print("    - Different input sizes")
+            print("    - Manual analysis of discovered gates")
+            print("    - Extended symbolic execution")
 
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python3 enhanced_shell_analyzer.py <binary_path>")
-        print("Example: python3 enhanced_shell_analyzer.py ./vulnerable_binary")
+        print("Usage: python enhanced_analyzer.py <binary_path>")
         sys.exit(1)
     
     binary_path = sys.argv[1]
     
     if not os.path.exists(binary_path):
-        print(f"[-] Binary not found: {binary_path}")
+        print(f"Error: Binary file '{binary_path}' not found")
         sys.exit(1)
     
-    print(f"[+] Starting enhanced analysis of: {binary_path}")
+    analyzer = EnhancedShellPayloadAnalyzer(binary_path, max_input_size=256)
+    
     start_time = time.time()
+    results = analyzer.analyze_enhanced()
+    end_time = time.time()
     
-    analyzer = EnhancedShellPayloadAnalyzer(binary_path)
+    analyzer.print_enhanced_results(results)
     
-    try:
-        success = analyzer.run_full_analysis()
-        
-        if success:
-            analyzer.print_comprehensive_results()
-        else:
-            print("\n[-] Analysis completed but no shell payloads were discovered")
-            print("    The binary may not be vulnerable or may require different techniques")
-        
-        end_time = time.time()
-        print(f"\n[+] Analysis completed in {end_time - start_time:.2f} seconds")
-        
-    except KeyboardInterrupt:
-        print("\n[!] Analysis interrupted by user")
-        if analyzer.found_solutions:
-            print("[+] Printing partial results...")
-            analyzer.print_comprehensive_results()
-    except Exception as e:
-        print(f"\n[-] Analysis failed with error: {e}")
-        import traceback
-        traceback.print_exc()
+    print(f"\n[+] Analysis completed in {end_time - start_time:.2f} seconds")
+    
+    
 
 
 if __name__ == "__main__":

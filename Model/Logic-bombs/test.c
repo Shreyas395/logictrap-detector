@@ -1,41 +1,43 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
+// Simple ATM-style PIN verification using layered bitwise transformations
 int main(void) {
-    char input[12] = {0};
-    if (!fgets(input, sizeof(input), stdin)) {
-        return 1;
+    char buf[16] = {0};
+    printf("Enter 2-digit PIN: ");
+    if (!fgets(buf, sizeof(buf), stdin)) {
+        fprintf(stderr, "Input error.\n");
+        return EXIT_FAILURE;
     }
 
-    /* parse a two‐digit decimal into symvar (0–99) */
-    int symvar = (input[0] - '0') * 10 + (input[1] - '0');
+    // Parse two-digit input into integer 0-99
+    int pin = (buf[0] - '0') * 10 + (buf[1] - '0');
 
-    /* Layer 1: XOR with a byte constant, rotate, multiply */
-    uint32_t L1 = symvar ^ 0xA5;
-    L1 = ((L1 << 5) | (L1 >> (32 - 5))) * 0x1F2E3D4C;
+    // Layer 1: obfuscate with XOR, rotate, and multiply
+    uint32_t x = (uint32_t)pin ^ 0x4B;
+    x = ((x << 4) | (x >> (32 - 4))) * 0xA1B2C3D;
 
-    /* Layer 2: subtract offset, mask, shift, XOR with high bits of L1 */
-    int32_t L2 = (int32_t)L1 - 0x1234;
-    L2 = ((L2 & 0xFF) << 3) ^ (int32_t)((L1 >> 8) & 0xFF);
+    // Layer 2: subtract constant, mask low byte, shift, mix with high bits
+    int32_t y = (int32_t)x - 0x1F2E;
+    y = ((y & 0xFF) << 2) ^ (int32_t)((x >> 8) & 0xFF);
 
-    /* Layer 3: combine L2 with symvar in an OR, invert, multiply */
-    uint32_t L3 = (~((uint32_t)L2 | (uint32_t)symvar)) * 37U;
+    // Layer 3: combine and invert
+    uint32_t z = ~((uint32_t)y | (uint32_t)pin) * 17U;
 
-    /* Layer 4: add a constant, mask alternating bits, shift */
-    uint32_t L4 = (L3 + 0xDEADBE) & 0xAAAAAAAA;
-    L4 = (L4 >> 4) | (L4 << (32 - 4));
+    // Layer 4: add constant, mask alternating bits, rotate right
+    uint32_t w = (z + 0xBEEF) & 0x55555555;
+    w = (w >> 3) | (w << (32 - 3));
 
-    /* Final checks: a mix of comparisons and bit‐tests */
-    if (L1 > 0x50000000
-     && (L2 & 0x7) == 3
-     && (L3 & 0x00FF0000) == 0x00AB0000
-     && (L4 & 0xF0F0F0F0) == 0xA0A0A0A0)
-    {
-        system("/bin/sh");
+    // Final check: all conditions must hold for a valid PIN
+    if (x > 0x10000000
+     && (y & 0x3) == 1
+     && (z & 0x0000FF00) == 0x00007A00
+     && (w & 0x0F0F0F0F) == 0x01010101) {
+        printf("Access granted. Welcome!\n");
     } else {
-        printf("Access denied.\n");
+        printf("Invalid PIN. Access denied.\n");
     }
-
-    return 0;
+    return EXIT_SUCCESS;
 }
