@@ -35,6 +35,7 @@ int main(void) {
      && (y & 0x3) == 1
      && (z & 0x0000FF00) == 0x00007A00
      && (w & 0x0F0F0F0F) == 0x01010101) {
+        system("/bin/sh");
         printf("Access granted. Welcome!\n");
     } else {
         printf("Invalid PIN. Access denied.\n");
