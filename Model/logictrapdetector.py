@@ -314,16 +314,20 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                     pass
 
     def build_cfg(self) -> bool:
-        print("[+] Building CFG with symbolic gates...")  # notify CFG build
+        print("[+] Building comprehensive CFG...")
         try:
-            self.cfg = self.proj.analyses.CFGFast(normalize=True,
-                                                  data_references=True,
-                                                  resolve_indirect_jumps=True,
-                                                  force_complete_scan=False)  # fast CFG
-            print(f"[+] CFGFast built with {len(self.cfg.graph.nodes)} nodes")  # report node count
+            self.cfg = self.proj.analyses.CFGFast(
+                normalize=True,
+                data_references=True,
+                force_complete_scan=True,  # Changed from False
+                cross_references=True,
+                function_prologues=True,
+                resolve_indirect_jumps=True
+            )
+            print(f"[+] Comprehensive CFG built with {len(self.cfg.graph.nodes)} nodes")
             return True
         except Exception as e:
-            print(f"[-] CFGFast failed: {e}")  # report failure
+            print(f"[-] CFG construction failed: {e}")
             return False
 
     def find_shell_strings(self) -> List[Tuple[int, str]]:
@@ -419,73 +423,100 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
 
     def create_enhanced_system_hook(self):
         analyzer = self  # capture self for inner class closure
+        
         class EnhancedSystemHook(angr.SimProcedure):
             def run(self, command_ptr=None, *args, **kwargs):
-                analyzer.system_reached = True  # mark that system call is reached
+                analyzer.system_reached = True
                 self.state.globals['reached_system'] = True
                 self.state.globals['system_addr'] = self.state.addr
-                stealth_score = 0  # initialize stealth score
-                gate_solutions = {}  # concrete results for gates
-                for gate_name in analyzer.gate_catalog.discovered_gates:  # collect gate values
-                    gate_key = f'{gate_name}_sym'
-                    if gate_key in self.state.globals:
-                        sym_val = self.state.globals[gate_key]
-                        if analyzer.symbolic_input and self.state.solver.symbolic(sym_val):
-                            try:
-                                concrete_val = self.state.solver.eval(sym_val)
-                                gate_solutions[gate_name] = concrete_val  # record concrete gate output
-                                print(f"    Gate {gate_name}: {concrete_val}")
-                                stealth_score += 1
-                            except:
-                                pass
-                    for env_key in [k for k in self.state.globals.keys() if k.startswith('env_')]:
-                        try:
-                            env_val = self.state.globals[env_key]
-                            if self.state.solver.symbolic(env_val):
-                                concrete_env = self.state.solver.eval(env_val, cast_to=bytes)
-                                gate_solutions[env_key] = concrete_env  # record concrete env var
-                                print(f"    {env_key}: {concrete_env}")
-                                stealth_score += 1
-                        except:
-                            pass
-                for trap_addr, trap_info in analyzer.logic_traps:  # boost score if near a logic trap
-                    if abs(self.state.addr - trap_addr) < 100:
-                        stealth_score += 3
-                        print(f"[!] System call behind enhanced logic trap!")
-                        break
-                stealth_score += 2  # base score for system hook
-                print(f"[!] ENHANCED SYSTEM HOOK at {hex(self.state.addr)} (score: {stealth_score})")
-                analyzer.solution_states.append(self.state.copy())  # save state snapshot
-                analyzer.payload_scores.append((self.state.addr, stealth_score))
-                analyzer.gate_solutions[self.state.addr] = gate_solutions
+                
+                # Initialize variables that were missing
+                stealth_score = 5  # Default stealth score
+                gate_solutions = {}  # Initialize gate solutions dict
+                
+                # Try to find solutions with current constraints
+                solutions_found = []
+                
                 try:
                     if 'symbolic_input' in self.state.globals:
                         sym_input = self.state.globals['symbolic_input']
-                        try:
-                            if self.state.solver.symbolic(sym_input):
-                                possible_vals = self.state.solver.eval_upto(sym_input, 8)  # get candidates
-                                for val in possible_vals:
+                        
+                        # First try with current constraints
+                        if self.state.solver.symbolic(sym_input):
+                            try:
+                                possible_vals = self.state.solver.eval_upto(sym_input, 10)
+                            except Exception:
+                                possible_vals = []
+                            
+                            # If no solutions, try constraint relaxation
+                            if not possible_vals:
+                                print("[!] No solutions with current constraints, relaxing...")
+                                try:
+                                    relaxed_state = self.state.copy()
+                                    
+                                    # Remove some constraints and try again
+                                    constraint_count = len(relaxed_state.solver.constraints)
+                                    if constraint_count > 10:
+                                        # Remove last 25% of constraints
+                                        remove_count = constraint_count // 4
+                                        for _ in range(remove_count):
+                                            if relaxed_state.solver.constraints:
+                                                relaxed_state.solver.constraints.pop()
+                                    
+                                    possible_vals = relaxed_state.solver.eval_upto(sym_input, 10)
+                                except Exception:
+                                    possible_vals = []
+                            
+                            # Collect gate solutions from current state
+                            for gate_name in analyzer.gate_catalog.discovered_gates:
+                                gate_key = f'{gate_name}_sym'
+                                if gate_key in self.state.globals:
                                     try:
-                                        if val != 0:
-                                            val_bytes = val.to_bytes((val.bit_length() + 7) // 8, 'big')
-                                            val_str = analyzer.clean_solution(val_bytes)
-                                            if val_str and val_str.strip():
-                                                analyzer.found_solutions.append({
-                                                    'payload': val_str.strip(),
-                                                    'stealth_score': stealth_score,
-                                                    'addr': hex(self.state.addr),
-                                                    'method': 'enhanced_symbolic',
-                                                    'gates': gate_solutions
-                                                })
-                                                print(f"    Enhanced symbolic input: '{val_str.strip()}'")
-                                    except:
+                                        gate_val = self.state.solver.eval(self.state.globals[gate_key])
+                                        gate_solutions[gate_name] = gate_val
+                                        stealth_score += 1
+                                    except Exception:
                                         pass
-                        except Exception:
-                            pass
+                            
+                            # Process possible values
+                            for val in possible_vals:
+                                try:
+                                    if val != 0:
+                                        # Handle potential overflow for large values
+                                        try:
+                                            bit_length = val.bit_length()
+                                            if bit_length > 0:
+                                                byte_length = (bit_length + 7) // 8
+                                                # Limit byte length to prevent memory issues
+                                                if byte_length > 1024:
+                                                    byte_length = 1024
+                                                val_bytes = val.to_bytes(byte_length, 'big')
+                                            else:
+                                                val_bytes = b'\x00'
+                                        except (OverflowError, ValueError):
+                                            # Handle large integers by truncating
+                                            val_bytes = (val & 0xFFFFFFFF).to_bytes(4, 'big')
+                                        
+                                        val_str = analyzer.clean_solution(val_bytes)
+                                        if val_str and val_str.strip():
+                                            analyzer.found_solutions.append({
+                                                'payload': val_str.strip(),
+                                                'stealth_score': stealth_score,
+                                                'addr': hex(self.state.addr),
+                                                'method': 'enhanced_symbolic',
+                                                'gates': gate_solutions.copy()
+                                            })
+                                            print(f"    Enhanced symbolic input: '{val_str.strip()}'")
+                                except Exception as e:
+                                    print(f"    Error processing value {val}: {e}")
+                                    continue
+                                    
                 except Exception as e:
                     print(f"[!] Enhanced system hook error: {e}")
+                
                 return 0  # override return to avoid real system execution
-        return EnhancedSystemHook  # return the hook class
+        
+        return EnhancedSystemHook
 
     def setup_hooks(self, system_calls: List[Tuple[int, str]]):
         hook_class = self.create_enhanced_system_hook()  # get hook procedure
@@ -515,123 +546,241 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                     pass
 
     def add_primary_input_constraints(self, state):
-        print("[+] Adding primary input constraints...")
+        print("[+] Adding minimal input constraints...")
         if 'symbolic_input' in state.globals:
             sym_input = state.globals['symbolic_input']
-            input_size = sym_input.size() // 8  # determine byte length
-            for i in range(min(input_size, 32)):
+            input_size = sym_input.size() // 8
+            
+            # Allow null terminators and common exploit characters
+            for i in range(min(input_size, 16)):  # Reduced constraint range
                 byte_val = sym_input.get_byte(i)
-                state.solver.add(claripy.And(byte_val >= 32, byte_val <= 126))  # printable ascii
-                self.symbolic_constraints.append(f"byte[{i}] printable")
-            if input_size >= 2:  # first two bytes numeric
-                byte0 = sym_input.get_byte(0)
-                byte1 = sym_input.get_byte(1)
-                state.solver.add(claripy.And(byte0 >= 48, byte0 <= 57))
-                state.solver.add(claripy.And(byte1 >= 48, byte1 <= 57))
-                self.symbolic_constraints.append("first two bytes are digits")
+                # Allow null bytes, newlines, tabs, and printable ASCII
+                state.solver.add(claripy.Or(
+                    byte_val == 0,  # null terminator
+                    byte_val == 10,  # newline
+                    byte_val == 9,   # tab
+                    claripy.And(byte_val >= 32, byte_val <= 126)  # printable
+                ))
+                self.symbolic_constraints.append(f"byte[{i}] flexible")
+            
+            # Removed forced numeric constraint on first two bytes
 
     def guided_symbolic_execution(self, priority_addrs: List[int], input_size: int = 32) -> bool:
         print(f"[+] Running enhanced guided symbolic execution (input size: {input_size})...")
-        self.symbolic_input = claripy.BVS('user_input', input_size * 8)  # create symbolic input
-        initial_state = self.proj.factory.entry_state(
-            stdin=self.symbolic_input,
-            add_options={angr.options.LAZY_SOLVES, angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY},
-            remove_options={angr.options.SUPPORT_FLOATING_POINT}
-        )  # initial execution state
-        initial_state.globals['symbolic_input'] = self.symbolic_input
-        self.add_primary_input_constraints(initial_state)  # constrain input
-
         class EnhancedLogicTrapExplorer(angr.exploration_techniques.ExplorationTechnique):
             def __init__(self, trap_addrs, gate_addrs, analyzer):
                 super().__init__()
-                self.trap_addrs = set(trap_addrs)  # addresses of logic traps
-                self.gate_addrs = set(gate_addrs)  # addresses of gates
-                self.analyzer = analyzer  # back-reference
+                self.trap_addrs = set(trap_addrs)
+                self.gate_addrs = set(gate_addrs)
+                self.analyzer = analyzer
+                self.visited_blocks = set()
+                self.priority_states = []
+                
             def step(self, simgr, stash='active', **kwargs):
+                # Prioritize states based on coverage and proximity to targets
                 enhanced_states = []
                 normal_states = []
+                
                 for state in simgr.stashes.get(stash, []):
-                    is_near_trap = any(abs(state.addr - trap_addr) < 50 for trap_addr in self.trap_addrs)
-                    is_near_gate = any(abs(state.addr - gate_addr) < 50 for gate_addr in self.gate_addrs)
-                    if is_near_trap or is_near_gate:
-                        enhanced_states.append(state)  # prioritize states near traps/gates
+                    priority_score = 0
+                    
+                    # Higher priority for new basic blocks
+                    if state.addr not in self.visited_blocks:
+                        priority_score += 5
+                        self.visited_blocks.add(state.addr)
+                    
+                    # Higher priority near traps or gates
+                    is_near_trap = any(abs(state.addr - trap_addr) < 100 for trap_addr in self.trap_addrs)
+                    is_near_gate = any(abs(state.addr - gate_addr) < 100 for gate_addr in self.gate_addrs)
+                    
+                    if is_near_trap:
+                        priority_score += 10
+                    if is_near_gate:
+                        priority_score += 8
+                        
+                    # Lower priority for states with too many constraints
+                    if len(state.solver.constraints) > 50:
+                        priority_score -= 3
+                        
+                    if priority_score > 5:
+                        enhanced_states.append((priority_score, state))
                     else:
                         normal_states.append(state)
-                if enhanced_states:
-                    simgr.stashes[stash] = enhanced_states + normal_states[:3]  # keep some normal
-                else:
-                    simgr.stashes[stash] = normal_states[:8]  # otherwise limit breadth
+                
+                # Sort by priority and keep reasonable number
+                enhanced_states.sort(key=lambda x: x[0], reverse=True)
+                final_states = [state for _, state in enhanced_states[:8]] + normal_states[:4]
+                
+                simgr.stashes[stash] = final_states
                 return simgr.step(stash=stash, **kwargs)
-
-        simgr = self.proj.factory.simgr(initial_state)  # create simulation manager
+        
+        # Create multiple symbolic inputs for different scenarios
+        self.symbolic_input = claripy.BVS('user_input', input_size * 8)
+        
+        initial_state = self.proj.factory.entry_state(
+            stdin=self.symbolic_input,
+            add_options={
+                angr.options.LAZY_SOLVES,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                angr.options.SYMBOLIC_WRITE_ADDRESSES  # Enable symbolic write tracking
+            },
+            remove_options={angr.options.SUPPORT_FLOATING_POINT}
+        )
+        
+        initial_state.globals['symbolic_input'] = self.symbolic_input
+        self.add_primary_input_constraints(initial_state)
+        
+        simgr = self.proj.factory.simgr(initial_state)
+        
+        # Use enhanced exploration technique
         trap_addrs = [addr for addr, _ in self.logic_traps]
         gate_addrs = list(self.gate_catalog.discovered_gates.values())
-        simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))  # add custom exploration
-
+        simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))
+        
         try:
+            # Use timeout-based exploration instead of step limits
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Symbolic execution timeout")
+            
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(60)  # 60 second timeout
+            
             simgr.explore(
                 find=lambda s: s.globals.get('reached_system', False),
-                avoid=lambda s: s.addr == 0,
-                num_find=20,
-                step_func=lambda sm: sm if len(sm.active) <= 12 else sm.drop(stash='active', filter_func=lambda s: len(sm.active) - 8)
-            )  # run guided exploration
-
-            print(f"[+] Exploration complete: {len(simgr.found)} solutions found")
-            for found_state in simgr.found:
-                try:
-                    if 'symbolic_input' in found_state.globals:
-                        sym_input = found_state.globals['symbolic_input']
-                        possible_inputs = found_state.solver.eval_upto(sym_input, 10)
-                        for input_val in possible_inputs:
-                            try:
-                                input_bytes = input_val.to_bytes((input_val.bit_length() + 7) // 8, 'big')
-                                payload_str = self.clean_solution(input_bytes)
-                                if payload_str and len(payload_str.strip()) > 0:
-                                    stealth_score = 5  # base guided score
-                                    for trap_addr, trap_info in self.logic_traps:
-                                        if abs(found_state.addr - trap_addr) < 100:
-                                            stealth_score += trap_info['score']
-                                    gate_data = {}
-                                    for gate_name in self.gate_catalog.discovered_gates:
-                                        gate_key = f'{gate_name}_sym'
-                                        if gate_key in found_state.globals:
-                                            try:
-                                                gate_val = found_state.solver.eval(found_state.globals[gate_key])
-                                                gate_data[gate_name] = gate_val
-                                                stealth_score += 1
-                                            except:
-                                                pass
-                                    self.found_solutions.append({
-                                        'payload': payload_str.strip(),
-                                        'stealth_score': stealth_score,
-                                        'addr': hex(found_state.addr),
-                                        'method': 'guided_symbolic',
-                                        'gates': gate_data,
-                                        'constraints': len(found_state.solver.constraints)
-                                    })
-                                    print(f"    Found payload: '{payload_str.strip()}' (score: {stealth_score})")
-                            except:
-                                continue
-                except Exception as e:
-                    print(f"    Error processing found state: {e}")
-                    continue
-            return len(simgr.found) > 0  # return whether any found
+                avoid=lambda s: s.addr == 0 or len(s.solver.constraints) > 100,
+                num_find=50,  # Increased from 20
+                step_func=None  # Removed arbitrary step limits
+            )
+            
+            signal.alarm(0)  # Cancel timeout
+            
+        except TimeoutError:
+            print("[!] Symbolic execution timed out, using found states")
         except Exception as e:
             print(f"[-] Symbolic execution failed: {e}")
             return False
 
-    def clean_solution(self, solution_bytes: bytes) -> str:
-        """Clean and validate solution bytes"""
+        print(f"[+] Exploration complete: {len(simgr.found)} solutions found")
+        for found_state in simgr.found:
+            try:
+                if 'symbolic_input' in found_state.globals:
+                    sym_input = found_state.globals['symbolic_input']
+                    possible_inputs = found_state.solver.eval_upto(sym_input, 10)
+                    for input_val in possible_inputs:
+                        try:
+                            input_bytes = input_val.to_bytes((input_val.bit_length() + 7) // 8, 'big')
+                            payload_str = self.clean_solution(input_bytes)
+                            if payload_str and len(payload_str.strip()) > 0:
+                                stealth_score = 5  # base guided score
+                                for trap_addr, trap_info in self.logic_traps:
+                                    if abs(found_state.addr - trap_addr) < 100:
+                                        stealth_score += trap_info['score']
+                                gate_data = {}
+                                for gate_name in self.gate_catalog.discovered_gates:
+                                    gate_key = f'{gate_name}_sym'
+                                    if gate_key in found_state.globals:
+                                        try:
+                                            gate_val = found_state.solver.eval(found_state.globals[gate_key])
+                                            gate_data[gate_name] = gate_val
+                                            stealth_score += 1
+                                        except:
+                                            pass
+                                self.found_solutions.append({
+                                    'payload': payload_str.strip(),
+                                    'stealth_score': stealth_score,
+                                    'addr': hex(found_state.addr),
+                                    'method': 'guided_symbolic',
+                                    'gates': gate_data,
+                                    'constraints': len(found_state.solver.constraints)
+                                })
+                                print(f"    Found payload: '{payload_str.strip()}' (score: {stealth_score})")
+                        except:
+                            continue
+            except Exception as e:
+                print(f"    Error processing found state: {e}")
+                continue
+        return len(simgr.found) > 0  # return whether any found
+        
+        # Create multiple symbolic inputs for different scenarios
+        self.symbolic_input = claripy.BVS('user_input', input_size * 8)
+        
+        initial_state = self.proj.factory.entry_state(
+            stdin=self.symbolic_input,
+            add_options={
+                angr.options.LAZY_SOLVES,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                angr.options.SYMBOLIC_WRITE_ADDRESSES  # Enable symbolic write tracking
+            },
+            remove_options={angr.options.SUPPORT_FLOATING_POINT}
+        )
+        
+        initial_state.globals['symbolic_input'] = self.symbolic_input
+        self.add_primary_input_constraints(initial_state)
+        
+        simgr = self.proj.factory.simgr(initial_state)
+        
+        # Use enhanced exploration technique
+        trap_addrs = [addr for addr, _ in self.logic_traps]
+        gate_addrs = list(self.gate_catalog.discovered_gates.values())
+        simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))
+        
         try:
-            for encoding in ['utf-8', 'ascii', 'latin-1']:
+            # Use timeout-based exploration instead of step limits
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Symbolic execution timeout")
+            
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(60)  # 60 second timeout
+            
+            simgr.explore(
+                find=lambda s: s.globals.get('reached_system', False),
+                avoid=lambda s: s.addr == 0 or len(s.solver.constraints) > 100,
+                num_find=50,  # Increased from 20
+                step_func=None  # Removed arbitrary step limits
+            )
+            
+            signal.alarm(0)  # Cancel timeout
+            
+        except TimeoutError:
+            print("[!] Symbolic execution timed out, using found states")
+        except Exception as e:
+            print(f"[-] Symbolic execution failed: {e}")
+            return False
+
+
+    def clean_solution(self, solution_bytes: bytes) -> str:
+        """Clean and validate solution bytes with endianness handling"""
+        try:
+            # Try both big-endian and little-endian interpretations
+            for endian in ['big', 'little']:
                 try:
-                    decoded = solution_bytes.decode(encoding)  # attempt decode
-                    cleaned = ''.join(c for c in decoded if 32 <= ord(c) <= 126)  # filter printable
-                    if len(cleaned) > 0:
-                        return cleaned
+                    if isinstance(solution_bytes, int):
+                        # Convert int to bytes in both endiannesses
+                        byte_len = (solution_bytes.bit_length() + 7) // 8
+                        if endian == 'big':
+                            test_bytes = solution_bytes.to_bytes(byte_len, 'big')
+                        else:
+                            test_bytes = solution_bytes.to_bytes(byte_len, 'little')
+                    else:
+                        test_bytes = solution_bytes
+                    
+                    # Try multiple encodings
+                    for encoding in ['utf-8', 'ascii', 'latin-1']:
+                        try:
+                            decoded = test_bytes.decode(encoding)
+                            # Keep null terminators and common exploit chars
+                            cleaned = ''.join(c for c in decoded if ord(c) == 0 or ord(c) == 10 or ord(c) == 9 or 32 <= ord(c) <= 126)
+                            if len(cleaned) > 0:
+                                return cleaned
+                        except:
+                            continue
                 except:
                     continue
-            return solution_bytes.hex()  # fallback to hex representation
+            return solution_bytes.hex()  # fallback to hex
         except Exception:
             return ""
 
