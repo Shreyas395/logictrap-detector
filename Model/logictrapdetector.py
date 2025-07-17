@@ -3,6 +3,7 @@ import claripy
 import sys
 import os
 import logging
+import matplotlib.pyplot as plt
 import time
 import re
 from typing import List, Tuple, Optional, Set, Dict, Any
@@ -319,12 +320,22 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
             self.cfg = self.proj.analyses.CFGFast(
                 normalize=True,
                 data_references=True,
-                force_complete_scan=True,  # Changed from False
+                force_complete_scan=True,
                 cross_references=True,
                 function_prologues=True,
                 resolve_indirect_jumps=True
             )
             print(f"[+] Comprehensive CFG built with {len(self.cfg.graph.nodes)} nodes")
+
+            # Export mini CFG to image
+            subgraph = self.cfg.graph.subgraph(list(self.cfg.graph.nodes)[:10])  # grab first 10 nodes
+            pos = nx.spring_layout(subgraph)
+            plt.figure(figsize=(10, 8))
+            nx.draw(subgraph, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=500)
+            plt.title("Partial CFG (First 10 Nodes)")
+            plt.savefig("partial_cfg.png", dpi=300)
+            print("[+] Saved partial CFG image as partial_cfg.png")
+
             return True
         except Exception as e:
             print(f"[-] CFG construction failed: {e}")
