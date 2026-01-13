@@ -1,113 +1,122 @@
 # logictrap-detector
 
-## Key Features
+## Abstract
 
-- **Symbolic Execution**  
-  Thoroughly explores program paths using the angr framework.
+logictrap-detector is a security research framework for detecting stealthy shell payloads hidden behind logic-obfuscated control flow in compiled binaries. The system addresses limitations of traditional static and dynamic analysis by combining guided symbolic execution, heuristic-driven path prioritization, and targeted fuzzing to systematically reach guarded execution states.
 
-- **Dynamic Fuzzing**  
-  Generates and tests custom inputs alongside symbolic runs.
+## Motivation
 
-- **External-Call Modeling**  
-  Recognizes and simulates calls to things like `system()`, file I/O, networking, randomness, environment variables, and more.
+Modern malware and challenge binaries increasingly conceal malicious behavior behind:
 
-- **Logic-Trap Detection**  
-  Spots code blocks with heavy comparisons or bitwise math: areas likely guarding security checks.
+- Deeply nested logical conditions  
+- Bitwise-heavy predicate checks  
+- Environment- or time-dependent execution gates  
+- Randomized or externally influenced control flow  
 
-- **Stealth Scoring**  
-  Rates each payload by how quiet it can be (complexity + evasion potential).
+These techniques significantly reduce the effectiveness of naive analysis approaches.  
+logictrap-detector addresses this gap by prioritizing execution paths that are semantically close to dangerous system primitives while maintaining tractable exploration.
+
+## System Overview
+
+The framework integrates symbolic execution, control-flow analysis, and input generation into a unified pipeline for uncovering guarded behavior. External dependencies are explicitly modeled to reduce false infeasibility and to improve coverage of paths that depend on environmental or runtime conditions.
+
+## Core Capabilities
+
+### Guided Symbolic Exploration
+
+Uses the angr framework to explore program paths with domain-specific heuristics that prioritize states approaching high-risk primitives such as system() and execve(), rather than uniform path enumeration.
+
+### Constraint-Aware Input Generation
+
+Augments symbolic execution with targeted fuzzing to generate concrete inputs for paths guarded by complex or brittle constraints that are difficult to solve symbolically.
+
+### External Dependency Modeling
+
+Identifies and simulates interactions with environment variables, randomness sources, file I/O, networking, time, and process control to prevent premature path elimination.
+
+### Logic-Gated Control-Flow Analysis
+
+Detects regions of control flow dominated by layered comparisons, bitwise arithmetic, or compound predicates that commonly serve as execution gates for hidden payloads.
+
+### Payload Ranking and Prioritization
+
+Scores discovered payloads based on constraint depth, gate interactions, and structural complexity to prioritize inputs with higher evasion potential.
+
+## Installation
+
+```bash
+pip install angr
+```
+
+Additional dependencies may be required depending on the target binary and analysis configuration.
 
 ## Usage
 
-### Basic scan of a binary
+### Analyze a binary
+
 ```bash
-python logictrapdetector.py /path/to/your/binary
+python logictrapdetector.py /path/to/binary
 ```
 
-## How It Works
+## Analysis Pipeline
 
-### Load the binary
-Load the target file into angr for analysis.
+1. **Binary Initialization**  
+   Loads the target executable into angr and prepares the symbolic execution environment.
 
-### Discover external calls
-Identify "gates" (randomness, environment, file I/O, time, networking, process control).
+2. **Gate Identification**  
+   Discovers external dependencies such as randomness, environment variables, file I/O, time, and networking that influence control flow.
 
-### Build control-flow graph
-Construct a CFG to map all possible execution paths.
+3. **Control-Flow Reconstruction**  
+   Builds a control-flow graph to identify reachable and unexplored execution paths.
 
-### Extract relevant strings
-Pull out shell-related strings and cross-reference their usage.
+4. **Sink Identification**  
+   Locates dangerous primitives including system(), execve(), and related calls.
 
-### Detect dangerous calls
-Spot risky functions like system(), execve(), etc.
+5. **Logic Gate Detection**  
+   Flags control regions with dense logical computation likely guarding sensitive behavior.
 
-### Identify logic traps
-Locate code regions with heavy comparisons or bitwise operations.
+6. **External Call Simulation**  
+   Hooks or simulates external calls to preserve path feasibility.
 
-### Model external calls
-Hook or simulate external functions so symbolic execution can handle them.
+7. **Guided Symbolic Exploration**  
+   Applies heuristic-driven exploration to advance toward guarded sinks while limiting path explosion.
 
-### Run guided symbolic execution
-Explore promising paths with custom exploration strategies.
+8. **Targeted Fuzzing**  
+   Generates concrete inputs to complement symbolic exploration in hard-to-solve regions.
 
-### Run intelligent fuzzing
-Complement symbolic runs with targeted fuzz-generated inputs.
+9. **Result Aggregation and Reporting**  
+   Collects, ranks, and reports inputs that successfully trigger guarded behavior.
 
-### Collect and report payloads
-Compile, score, and present payloads that trigger shell commands.
+## Output
 
-## Output Format
+Each discovered payload includes:
 
-### Input string
-The payload that triggers a shell or logic trap.
+- Triggering input  
+- Stealth score indicating evasion potential  
+- Discovery method (symbolic execution or fuzzing)  
+- Trigger location (function or address)  
+- External gate values  
+- Constraint count  
 
-### Stealth score
-How subtle the payload is (higher = more evasion potential).
+## Stealth Scoring Model
 
-### Discovery method
-Whether it was found via symbolic execution or fuzzing.
+- Base discovery method: 3–5 points  
+- Logic gate complexity: +2–10 points  
+- External dependency interactions: +1 point per gate  
+- Constraint complexity: +1 point per factor  
 
-### Trigger location
-The address or function where the payload activates.
+## Exploration Strategy
 
-### Gate values
-Values returned by external calls (e.g., getenv, time).
-
-### Constraint count
-The number of symbolic conditions involved.
-
-## Stealth Scoring Breakdown
-
-### Base method
-3–5 points
-
-### Logic-trap complexity
-+2–10 points
-
-### Gate interactions
-+1 point each
-
-### Constraint complexity
-+1 point per factor
-
-## Exploration Strategies
-
-### Prioritize system-call proximity
-Focus on states near dangerous calls.
-
-### Cover new blocks first
-Encourage exploration of unvisited code paths.
-
-### Limit constraints
-Prevent symbolic explosion by capping condition counts.
-
-### Handle timeouts gracefully
-Ensure clean termination on long-running analyses.
+- Prioritize states near dangerous system primitives  
+- Favor unexplored basic blocks to improve coverage  
+- Bound symbolic constraint growth to prevent path explosion  
+- Enforce timeouts for long-running analyses  
 
 ## Limitations
 
-### Performance
-Large or heavily obfuscated binaries may take a long time to analyze.
+Analysis may be slow on large or heavily obfuscated binaries.  
+Some execution paths may remain unreachable due to environmental assumptions.
 
-### Coverage
-Some execution paths may be missed.
+## Intended Use
+
+This project is intended for defensive security research, malware analysis, and experimentation with symbolic execution techniques.
