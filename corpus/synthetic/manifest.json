@@ -1,0 +1,54 @@
+{
+  "category": "synthetic",
+  "description": "Synthetic logic bombs hand-written for development. Easy tier of the eval corpus.",
+  "samples": [
+    {
+      "id": "synthetic-multiplyint",
+      "path": "Model/multiplyint",
+      "source": "Model/Logic-bombs/multiplyint_to_l1.c",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "shell-exec",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "fuzz-solvable",
+        "trigger_note": "Single ASCII digit through three XOR/shift/mask stages."
+      }
+    },
+    {
+      "id": "synthetic-stdin-svd",
+      "path": "Model/stdin",
+      "source": "Model/Logic-bombs/stdin_svd.c",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "shell-exec",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "fuzz-solvable",
+        "trigger_note": "uint32 from scanf through three XOR/shift/multiply layers."
+      }
+    },
+    {
+      "id": "synthetic-df2",
+      "path": "Model/df2",
+      "source": "Model/Logic-bombs/df2cf_cp_l1.c",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "shell-exec",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "fuzz-solvable",
+        "trigger_note": "memcpy first 4 bytes into uint32, two layers of swap/XOR/mask."
+      }
+    },
+    {
+      "id": "synthetic-pin-check-l4",
+      "path": "Model/pin_check_l4",
+      "source": "Model/Logic-bombs/pin_check_l4.c",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "shell-exec",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "fuzz-solvable",
+        "trigger_note": "Two-digit PIN through four layers: XOR/rotate/multiply, mask/shift, invert, rotate."
+      }
+    }
+  ]
+}
