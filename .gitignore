@@ -1,0 +1,12 @@
+output/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.swp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,4 @@
+angr>=9.2.110
+claripy>=9.2.110
+matplotlib>=3.7
+networkx>=3.0
