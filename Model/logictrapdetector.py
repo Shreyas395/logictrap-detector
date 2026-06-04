@@ -13,6 +13,7 @@ logging.getLogger('angr').setLevel(logging.CRITICAL)
 logging.getLogger('claripy').setLevel(logging.CRITICAL)
 logging.getLogger('cle').setLevel(logging.CRITICAL)
 logging.getLogger('pyvex').setLevel(logging.CRITICAL)
+log = logging.getLogger(__name__)
 class ExternalGateCatalog:  # Manages sets of external “gates” (functions/syscalls) and their symbolic models
     def __init__(self):
         self.randomness_gates = {'rand', 'random', 'srand', 'srandom', 'getrandom', 'arc4random', 'urandom'}  # functions that introduce randomness
@@ -41,22 +42,22 @@ class ExternalGateCatalog:  # Manages sets of external “gates” (functions/sy
                     func = proj.kb.functions[gate]
                     self.discovered_gates[gate] = func.addr  # store its address
                     print(f"    {gate} function at {hex(func.addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"kb.functions lookup failed for {gate}: {e}")
             try:
                 for addr, name in proj.loader.main_object.plt.items():  # scan the PLT for imports
                     if name == gate:
                         self.discovered_gates[gate] = addr  # record PLT entry address
                         print(f"    {gate} PLT at {hex(addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"PLT scan failed for {gate}: {e}")
             try:
                 symbol = proj.loader.find_symbol(gate)  # look for exported symbols
                 if symbol:
                     self.discovered_gates[gate] = symbol.rebased_addr  # record symbol address
                     print(f"    {gate} symbol at {hex(symbol.rebased_addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"find_symbol failed for {gate}: {e}")
         return self.discovered_gates  # return map of gate names to addresses
 
     def create_symbolic_models(self):
@@ -111,7 +112,7 @@ class ExternalGateCatalog:  # Manages sets of external “gates” (functions/sy
                             self.state.memory.store(env_ptr, env_value)
                             self.state.globals[f'env_{var_name}'] = env_value
                             return env_ptr  # pointer to symbolic string
-                        except:
+                        except Exception:
                             env_value = claripy.BVS('env_unknown', 64 * 8)
                             env_ptr = self.state.heap.allocate(64)
                             self.state.memory.store(env_ptr, env_value)
@@ -229,8 +230,8 @@ class LogicTrapAnalyzer:  # Analyzes basic blocks for logic “traps” based on
                         if target_addr in gate_addrs:
                             complexity_score += 3  # bump score for external gate call
                             gate_calls.append((insn.address, mnemonic, insn.op_str))  # log the gate call
-                    except:
-                        pass  # ignore any parsing errors
+                    except Exception as e:
+                        log.debug(f"call-target parse failed at {hex(insn.address)}: {e}")
             return {
                 'score': complexity_score,       # total complexity score
                 'operations': operations,        # logged complex operations
@@ -306,13 +307,13 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                 try:
                     self.proj.hook_symbol(gate_name, self.gate_catalog.symbolic_models[gate_name]())  # hook by name
                     print(f"    Hooked {gate_name} symbol")
-                except:
-                    pass
+                except Exception as e:
+                    log.debug(f"hook_symbol failed for {gate_name}: {e}")
                 try:
                     self.proj.hook(gate_addr, self.gate_catalog.symbolic_models[gate_name]())  # hook by address
                     print(f"    Hooked {gate_name} at {hex(gate_addr)}")
-                except:
-                    pass
+                except Exception as e:
+                    log.debug(f"hook by addr failed for {gate_name} at {hex(gate_addr)}: {e}")
 
     def build_cfg(self) -> bool:
         print("[+] Building comprehensive CFG...")
@@ -328,13 +329,15 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
             print(f"[+] Comprehensive CFG built with {len(self.cfg.graph.nodes)} nodes")
 
             # Export mini CFG to image
+            os.makedirs("output", exist_ok=True)
+            cfg_image_path = os.path.join("output", "partial_cfg.png")
             subgraph = self.cfg.graph.subgraph(list(self.cfg.graph.nodes)[:10])  # grab first 10 nodes
             pos = nx.spring_layout(subgraph)
             plt.figure(figsize=(10, 8))
             nx.draw(subgraph, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=500)
             plt.title("Partial CFG (First 10 Nodes)")
-            plt.savefig("partial_cfg.png", dpi=300)
-            print("[+] Saved partial CFG image as partial_cfg.png")
+            plt.savefig(cfg_image_path, dpi=300)
+            print(f"[+] Saved partial CFG image as {cfg_image_path}")
 
             return True
         except Exception as e:
@@ -389,22 +392,22 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                     func = self.proj.kb.functions[func_name]
                     self.system_addrs.add(func.addr)  # log function address
                     print(f"    {func_name} function found at {hex(func.addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"kb.functions lookup failed for {func_name}: {e}")
             try:
                 for addr, name in self.proj.loader.main_object.plt.items():  # scan PLT
                     if name == func_name:
                         self.system_addrs.add(addr)
                         print(f"    {func_name} PLT entry at {hex(addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"PLT scan failed for {func_name}: {e}")
             try:
                 symbol = self.proj.loader.find_symbol(func_name)  # check exported symbols
                 if symbol:
                     self.system_addrs.add(symbol.rebased_addr)
                     print(f"    {func_name} symbol at {hex(symbol.rebased_addr)}")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"find_symbol failed for {func_name}: {e}")
         try:
             all_functions = list(self.proj.kb.functions.values())
             for func in all_functions:  # scan every function
@@ -536,8 +539,8 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
             try:
                 self.proj.hook_symbol(func_name, hook_class())  # hook by symbol
                 print(f"    Hooked {func_name} symbol")
-            except:
-                pass
+            except Exception as e:
+                log.debug(f"hook_symbol failed for {func_name}: {e}")
         hooked_addrs = set()  # track addresses already hooked
         for addr, call_type in system_calls:
             if addr not in hooked_addrs:
@@ -545,16 +548,16 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                     self.proj.hook(addr, hook_class())  # hook each call site
                     hooked_addrs.add(addr)
                     print(f"    Hooked {call_type} at {hex(addr)}")
-                except:
-                    pass
+                except Exception as e:
+                    log.debug(f"hook of {call_type} at {hex(addr)} failed: {e}")
         for system_addr in self.system_addrs:
             if system_addr not in hooked_addrs:
                 try:
                     self.proj.hook(system_addr, hook_class())  # hook direct system functions
                     hooked_addrs.add(system_addr)
                     print(f"    Hooked system function at {hex(system_addr)}")
-                except:
-                    pass
+                except Exception as e:
+                    log.debug(f"hook of system function at {hex(system_addr)} failed: {e}")
 
     def add_primary_input_constraints(self, state):
         print("[+] Adding minimal input constraints...")
@@ -648,27 +651,23 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
         gate_addrs = list(self.gate_catalog.discovered_gates.values())
         simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))
         
+        timeout_seconds = 60
+        explore_start = time.monotonic()
+
+        def time_limit_step(sm):
+            if time.monotonic() - explore_start > timeout_seconds:
+                sm.move(from_stash='active', to_stash='deadended')
+            return sm
+
         try:
-            # Use timeout-based exploration instead of step limits
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Symbolic execution timeout")
-            
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(60)  # 60 second timeout
-            
             simgr.explore(
                 find=lambda s: s.globals.get('reached_system', False),
                 avoid=lambda s: s.addr == 0 or len(s.solver.constraints) > 100,
-                num_find=50,  # Increased from 20
-                step_func=None  # Removed arbitrary step limits
+                num_find=50,
+                step_func=time_limit_step
             )
-            
-            signal.alarm(0)  # Cancel timeout
-            
-        except TimeoutError:
-            print("[!] Symbolic execution timed out, using found states")
+            if time.monotonic() - explore_start > timeout_seconds:
+                print("[!] Symbolic execution hit 60s timeout, using found states")
         except Exception as e:
             print(f"[-] Symbolic execution failed: {e}")
             return False
@@ -696,8 +695,8 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                                             gate_val = found_state.solver.eval(found_state.globals[gate_key])
                                             gate_data[gate_name] = gate_val
                                             stealth_score += 1
-                                        except:
-                                            pass
+                                        except Exception as e:
+                                            log.debug(f"gate eval failed for {gate_name}: {e}")
                                 self.found_solutions.append({
                                     'payload': payload_str.strip(),
                                     'stealth_score': stealth_score,
@@ -707,61 +706,13 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                                     'constraints': len(found_state.solver.constraints)
                                 })
                                 print(f"    Found payload: '{payload_str.strip()}' (score: {stealth_score})")
-                        except:
+                        except Exception as e:
+                            log.debug(f"payload eval failed: {e}")
                             continue
             except Exception as e:
                 print(f"    Error processing found state: {e}")
                 continue
         return len(simgr.found) > 0  # return whether any found
-        
-        # Create multiple symbolic inputs for different scenarios
-        self.symbolic_input = claripy.BVS('user_input', input_size * 8)
-        
-        initial_state = self.proj.factory.entry_state(
-            stdin=self.symbolic_input,
-            add_options={
-                angr.options.LAZY_SOLVES,
-                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
-                angr.options.SYMBOLIC_WRITE_ADDRESSES  # Enable symbolic write tracking
-            },
-            remove_options={angr.options.SUPPORT_FLOATING_POINT}
-        )
-        
-        initial_state.globals['symbolic_input'] = self.symbolic_input
-        self.add_primary_input_constraints(initial_state)
-        
-        simgr = self.proj.factory.simgr(initial_state)
-        
-        # Use enhanced exploration technique
-        trap_addrs = [addr for addr, _ in self.logic_traps]
-        gate_addrs = list(self.gate_catalog.discovered_gates.values())
-        simgr.use_technique(EnhancedLogicTrapExplorer(trap_addrs, gate_addrs, self))
-        
-        try:
-            # Use timeout-based exploration instead of step limits
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Symbolic execution timeout")
-            
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(60)  # 60 second timeout
-            
-            simgr.explore(
-                find=lambda s: s.globals.get('reached_system', False),
-                avoid=lambda s: s.addr == 0 or len(s.solver.constraints) > 100,
-                num_find=50,  # Increased from 20
-                step_func=None  # Removed arbitrary step limits
-            )
-            
-            signal.alarm(0)  # Cancel timeout
-            
-        except TimeoutError:
-            print("[!] Symbolic execution timed out, using found states")
-        except Exception as e:
-            print(f"[-] Symbolic execution failed: {e}")
-            return False
-
 
     def clean_solution(self, solution_bytes: bytes) -> str:
         """Clean and validate solution bytes with endianness handling"""
@@ -787,9 +738,9 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                             cleaned = ''.join(c for c in decoded if ord(c) == 0 or ord(c) == 10 or ord(c) == 9 or 32 <= ord(c) <= 126)
                             if len(cleaned) > 0:
                                 return cleaned
-                        except:
+                        except Exception:
                             continue
-                except:
+                except Exception:
                     continue
             return solution_bytes.hex()  # fallback to hex
         except Exception:
@@ -835,9 +786,11 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                                     fuzzing_results.append(payload_str)  # record successful fuzz
                                     print(f"    Fuzzing hit: '{payload_str}'")
                                 break
-                except:
+                except Exception as e:
+                    log.debug(f"fuzz simgr.run failed: {e}")
                     continue
-            except:
+            except Exception as e:
+                log.debug(f"fuzz payload setup failed: {e}")
                 continue
         return fuzzing_results  # return all fuzz hits
 
@@ -874,7 +827,8 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                 try:
                     if self.guided_symbolic_execution(list(gate_addrs), size):
                         found_any = True
-                except:
+                except Exception as e:
+                    log.debug(f"guided_symbolic_execution failed at input_size={size}: {e}")
                     continue
         results = {
             'binary_path': self.binary_path,
