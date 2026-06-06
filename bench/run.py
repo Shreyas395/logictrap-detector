@@ -21,8 +21,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "Model"))
 
-from logictrapdetector import EnhancedShellPayloadAnalyzer  # noqa: E402
-
 
 def load_category_manifests(corpus_root: Path):
     for category_dir in sorted(corpus_root.iterdir()):
@@ -51,6 +49,10 @@ def jsonable(value):
 def run_sample(binary_path: Path, max_input_size: int) -> dict:
     if not binary_path.exists():
         return {"error": f"binary not found at {binary_path}"}
+    # Lazy import: keeps angr off the module-load path so test runners
+    # and ``--help`` don't pay the analyzer-import cost up front.
+    from logictrapdetector import EnhancedShellPayloadAnalyzer
+
     analyzer = EnhancedShellPayloadAnalyzer(str(binary_path), max_input_size=max_input_size)
     t0 = time.monotonic()
     try:

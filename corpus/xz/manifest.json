@@ -1,0 +1,5 @@
+{
+  "category": "xz",
+  "description": "XZ Utils backdoor artifacts (CVE-2024-3094). Populate per the README before running the harness.",
+  "samples": []
+}
