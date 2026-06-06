@@ -11,7 +11,7 @@ from collections import defaultdict
 import networkx as nx
 
 from external_gates import ExternalGateCatalog
-from gate_locator import LogicTrapAnalyzer
+from gate_locator import LogicTrapAnalyzer, SinkFinder
 
 logging.getLogger('angr').setLevel(logging.CRITICAL)
 logging.getLogger('claripy').setLevel(logging.CRITICAL)
@@ -27,20 +27,20 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
         self.proj = None  # angr Project instance placeholder
         self.cfg = None  # control-flow graph placeholder
         self.gate_catalog = ExternalGateCatalog()  # catalog of external function/syscall hooks
-        self.dangerous_functions = {'system', 'execve', 'execvp', 'execl', 'execlp', 'execle', 'execv',
-                                    'posix_spawn', 'posix_spawnp', 'popen', 'sh', 'bash', 'zsh',
-                                    'fork', 'vfork', 'clone', 'waitpid', 'wait', 'wait3', 'wait4'}  # functions indicating shell execution
+        self.sink_finder = SinkFinder()  # locates calls into dangerous primitives
+        # Aliases below share state with the SinkFinder so existing call sites stay valid.
+        self.dangerous_functions = self.sink_finder.dangerous_functions
+        self.system_addrs = self.sink_finder.system_addrs  # addresses of system-like functions
+        self.system_call_sites = self.sink_finder.system_call_sites  # addresses of detected system calls
         self.shell_syscalls = {11: 'execve', 59: 'execve', 57: 'fork', 58: 'vfork', 56: 'clone'}  # syscall numbers mapping
         self.input_functions = {'fgets', 'gets', 'scanf', 'fscanf', 'read', 'fread', 'getline',
                                 'getdelim', 'fgetc', 'getchar', 'getc', '__isoc99_scanf'}  # functions reading user input
         self.shell_strings = []  # extracted shell-related strings
-        self.system_call_sites = []  # addresses of detected system calls
         self.found_solutions = []  # list of discovered payloads
         self.interesting_strings = []  # non-shell but noteworthy strings
         self.string_xrefs = {}  # cross-references for string usages
         self.symbolic_input = None  # symbolic variable for stdin
         self.system_reached = False  # flag indicating system hook reached
-        self.system_addrs = set()  # addresses of system-like functions
         self.solution_states = []  # saved solver states at system call
         self.logic_traps = []  # identified logic trap blocks
         self.payload_scores = []  # stealth scores per payload
@@ -148,58 +148,6 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
         except Exception as e:
             print(f"[-] Error finding strings: {e}")  # catch high-level failures
         return strings_found  # return all found shell strings
-
-    def find_system_calls_enhanced(self) -> List[Tuple[int, str]]:
-        system_calls = []  # collect call sites
-        print("[+] Enhanced system call detection...")  # notify detection start
-        for func_name in self.dangerous_functions:  # check each dangerous function
-            try:
-                if func_name in self.proj.kb.functions:
-                    func = self.proj.kb.functions[func_name]
-                    self.system_addrs.add(func.addr)  # log function address
-                    print(f"    {func_name} function found at {hex(func.addr)}")
-            except Exception as e:
-                log.debug(f"kb.functions lookup failed for {func_name}: {e}")
-            try:
-                for addr, name in self.proj.loader.main_object.plt.items():  # scan PLT
-                    if name == func_name:
-                        self.system_addrs.add(addr)
-                        print(f"    {func_name} PLT entry at {hex(addr)}")
-            except Exception as e:
-                log.debug(f"PLT scan failed for {func_name}: {e}")
-            try:
-                symbol = self.proj.loader.find_symbol(func_name)  # check exported symbols
-                if symbol:
-                    self.system_addrs.add(symbol.rebased_addr)
-                    print(f"    {func_name} symbol at {hex(symbol.rebased_addr)}")
-            except Exception as e:
-                log.debug(f"find_symbol failed for {func_name}: {e}")
-        try:
-            all_functions = list(self.proj.kb.functions.values())
-            for func in all_functions:  # scan every function
-                try:
-                    for block_addr in func.block_addrs:
-                        try:
-                            block = self.proj.factory.block(block_addr)  # lift block
-                            for insn in block.capstone.insns:  # inspect instructions
-                                if insn.mnemonic in ['call', 'callq']:
-                                    for dangerous_func in self.dangerous_functions:
-                                        if dangerous_func in insn.op_str.lower():
-                                            system_calls.append((insn.address, f'{dangerous_func}_call'))  # found call
-                                            self.system_call_sites.append(insn.address)
-                                            print(f"    FOUND: {dangerous_func} call at {hex(insn.address)}")
-                                            break
-                                elif insn.mnemonic in ['syscall', 'int', 'sysenter']:
-                                    system_calls.append((insn.address, 'syscall'))  # direct syscall
-                                    self.system_call_sites.append(insn.address)
-                                    print(f"    FOUND: syscall at {hex(insn.address)}")
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-        except Exception as e:
-            print(f"    Error scanning for system calls: {e}")
-        return system_calls  # return detected sites
 
     def create_enhanced_system_hook(self):
         analyzer = self  # capture self for inner class closure
@@ -570,7 +518,7 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
         if not self.build_cfg():
             return {'error': 'Failed to build CFG'}  # abort on CFG failure
         shell_strings = self.find_shell_strings()  # gather strings
-        system_calls = self.find_system_calls_enhanced()  # gather calls
+        system_calls = self.sink_finder.find(self.proj)  # gather calls
         gate_addrs = set(self.gate_catalog.discovered_gates.values())
         self.logic_traps = self.logic_analyzer.find_logic_traps(self.proj, self.cfg, gate_addrs)  # detect traps
         self.setup_hooks(system_calls)  # install all hooks

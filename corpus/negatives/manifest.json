@@ -1,0 +1,5 @@
+{
+  "category": "negatives",
+  "description": "Clean binaries used to measure false-positive rate. Populate per the README.",
+  "samples": []
+}
