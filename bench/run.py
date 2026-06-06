@@ -1,15 +1,15 @@
 """Benchmark harness for logictrap-detector.
 
-Iterates the corpus, runs the analyzer per sample, emits per-sample +
-aggregate JSON. Week 2 scope: just drive the existing analyzer and dump
-raw results. Weeks 7+: extend to compute recall / characterization-F1 /
-FP rate against the manifest ground-truth fields.
+Iterates the corpus, runs the analyzer per sample, and emits per-sample
+plus aggregate JSON. Currently dumps raw analyzer results; future
+extension can compute recall, characterization F1, and false-positive
+rate against the manifest ground-truth fields.
 
 Usage:
     python bench/run.py                          # run everything
     python bench/run.py --filter synthetic       # one category
     python bench/run.py --filter pin_check_l4    # one sample
-    python bench/run.py --timeout 120 --out output/bench.json
+    python bench/run.py --out output/bench.json
 """
 import argparse
 import json

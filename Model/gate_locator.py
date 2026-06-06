@@ -1,14 +1,10 @@
 """Locates candidate "logic-trap" gates inside a binary.
 
-A gate, in this project's terminology, is a basic block whose predicate is
-dense with bitwise / arithmetic / comparison ops and (optionally) calls into
-known external dependencies. Gates of interest sit on a CFG path toward a
-dangerous sink (system, execve, etc.) and act as the dormant condition
-hiding a payload.
-
-Week 2 scope: extracted LogicTrapAnalyzer from the original orchestrator.
-Weeks 4+: the slicer (slicer.py) will consume the gates found here and
-extract their backward-slice for LLM characterization.
+A gate, in this project's terminology, is a basic block whose predicate
+is dense with bitwise / arithmetic / comparison ops and (optionally)
+calls into known external dependencies. Gates of interest sit on a CFG
+path toward a dangerous sink (``system``, ``execve``, etc.) and act as
+the dormant condition hiding a payload.
 """
 import logging
 from typing import Any, Dict, List, Set, Tuple

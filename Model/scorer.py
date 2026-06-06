@@ -1,13 +1,11 @@
 """Sink-distance scorer.
 
-Replaces the original ad-hoc "stealth score" with a defined metric so the
-paper has a calibratable knob:
+Defines a metric for ranking candidate gates:
 
     score = (gate_complexity * external_dep_count) / max(1, basic_blocks_to_sink)
 
-Higher = the gate is more "loaded" (lots of obfuscation + many external
-dependencies) AND sits closer to a sink. Reviewer-defensible because every
-term has a clear interpretation.
+Higher means the gate is more "loaded" (heavy obfuscation + many
+external dependencies) and sits closer to a dangerous sink.
 """
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
