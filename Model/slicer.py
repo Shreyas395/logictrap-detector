@@ -1,15 +1,14 @@
 """Backward slicer over the predicate of a candidate gate block.
 
-Stub for week 4. Given a (gate_block_addr, sink_addr) pair from
-gate_locator.LogicTrapAnalyzer, this module will:
+Given a ``(gate_block_addr, sink_addr)`` pair from ``gate_locator``,
+this module:
 
-  1. Compute a backward slice of instructions reaching the predicate.
-  2. Lift to angr VEX IR.
-  3. Pretty-print as pseudo-C by shelling out to Ghidra headless
-     (`analyzeHeadless` + a small post-script). Ghidra is the right
-     free dependency here — no API keys, runs locally, scriptable.
+  1. Computes a backward slice of instructions reaching the predicate.
+  2. Lifts to angr VEX IR.
+  3. Pretty-prints to pseudo-C by shelling out to Ghidra headless
+     (``analyzeHeadless`` + a small post-script).
 
-Output is a `GateSlice` dataclass consumed by characterizer.py.
+Output is a ``GateSlice`` dataclass.
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -31,4 +30,4 @@ class GateSlicer:
         self.project_dir = project_dir
 
     def slice_gate(self, proj, gate_addr: int, sink_addr: int) -> GateSlice:
-        raise NotImplementedError("week 4 deliverable")
+        raise NotImplementedError

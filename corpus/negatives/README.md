@@ -1,28 +1,26 @@
 # corpus/negatives
 
-Clean binaries with legitimate env/time/locale/process checks. Used to
-measure the **false-positive rate** of the gate locator + LLM
-characterizer. Per the verified caveats in the deep-research plan, this
-is itself a publishable subcontribution — no prior work has measured
-LLM-trigger FPR on benign environment checks.
+Clean binaries with legitimate env / time / locale / process checks.
+Used to measure the false-positive rate of the gate locator and the
+characterizer.
 
-## URTC-scoped target: ~10 clean binaries
+## Suggested set
 
-Suggested set (cross-platform-safe):
+Standard utilities exercise plenty of benign env-var and locale logic:
 
-- `ls`, `cat`, `grep`, `find` — coreutils, lots of `getenv("LANG")`,
+- `ls`, `cat`, `grep`, `find` (coreutils): `getenv("LANG")`,
   `getenv("LC_*")`, file-stat checks.
-- `bash` — heavy on env-var introspection.
-- `git` — env-var (`GIT_*`), config file reads, time stamps.
-- `ssh` — process checks, env-controlled behavior.
+- `bash`: heavy on env-var introspection.
+- `git`: `GIT_*` env vars, config-file reads, timestamps.
+- `ssh`: process checks, env-controlled behavior.
 
-Drop the binaries (or a manifest pointing to system paths) here.
+Drop the binaries here, or write a manifest pointing to system paths.
 
-## Ground-truth `manifest.json` schema
+## `manifest.json` schema
 
-Each entry has `has_payload: false` and an `expected_gates_flagged: 0`
-prediction. The eval driver in `bench/run.py` counts every gate flagged
-on these as a false positive.
+Each entry has `has_payload: false` with an expected upper bound of
+zero gates flagged. `bench/run.py` counts every gate flagged on these
+samples as a false positive.
 
 ```json
 {
@@ -40,9 +38,3 @@ on these as a false positive.
   ]
 }
 ```
-
-## Honest scoping note
-
-The plan caps this at ~10 binaries for URTC. A full coreutils sweep
-(>100 binaries) is the right follow-up for an arXiv-extended version
-or a top-tier resubmission post-URTC.

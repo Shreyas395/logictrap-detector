@@ -1,6 +1,6 @@
 {
   "category": "synthetic",
-  "description": "Synthetic logic bombs hand-written for development. Easy tier of the eval corpus.",
+  "description": "Synthetic logic bombs hand-written for development and smoke-testing.",
   "samples": [
     {
       "id": "synthetic-multiplyint",

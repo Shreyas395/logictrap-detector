@@ -1,7 +1,7 @@
 """LLM-based characterizer for trigger-gated branches.
 
-Stub for weeks 5-6. Consumes a GateSlice (slicer.py) and asks an LLM to
-emit a structured prediction:
+Consumes a ``GateSlice`` (from ``slicer``) and asks an LLM to emit a
+structured prediction:
 
     { gate_kind: env|time|crypto|process|fs|net|hw|locale|mixed,
       external_deps: [...],
@@ -9,12 +9,10 @@ emit a structured prediction:
       payload_class: shell-exec|deserialize|jit-write|fnptr-overwrite|other,
       why: "short justification quoting the lifted IR" }
 
-LLM backends — all free under user's "no paid API keys" constraint:
-  - primary: Ollama + Qwen2.5-Coder-7B-Instruct (local, CPU)
-  - secondary: Google AI Studio (Gemini 2.0 Flash) free tier
-  - tertiary: Groq free tier (Llama 3.3 70B), if quota allows
-
-Disagreement rate across backends doubles as a soft uncertainty signal.
+Supported backends:
+  - Ollama (local) — e.g. Qwen2.5-Coder-7B-Instruct
+  - Google AI Studio — Gemini family
+  - Groq — Llama 3.x family
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -42,4 +40,4 @@ class Characterizer:
         self.model_name = model_name
 
     def characterize(self, gate_slice) -> GateCharacterization:
-        raise NotImplementedError("weeks 5-6 deliverable")
+        raise NotImplementedError
