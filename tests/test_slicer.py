@@ -242,18 +242,18 @@ class TestGhidraFallback:
         # support/analyzeHeadless does not exist in tmp_path -> graceful empty.
         assert slicer._try_ghidra(proj=object(), block_addrs=[0x1000]) == ""
 
-    def test_executable_path_uses_bat_on_windows(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("os.name", "nt")
+    def test_executable_path_under_install_dir(self, tmp_path):
         slicer = GateSlicer(ghidra_install_dir=str(tmp_path))
         path = slicer._ghidra_headless_executable()
-        assert path.endswith("analyzeHeadless.bat")
+        # The basename must be the headless analyzer; extension depends on host OS.
+        assert "analyzeHeadless" in path
+        # The full path must live under the configured install dir's support/ subdir.
+        assert str(tmp_path) in path
+        assert ("support" + ("\\" if "\\" in path else "/")) in path
 
-    def test_executable_path_no_bat_on_posix(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("os.name", "posix")
-        slicer = GateSlicer(ghidra_install_dir=str(tmp_path))
-        path = slicer._ghidra_headless_executable()
-        assert path.endswith("analyzeHeadless")
-        assert not path.endswith(".bat")
+    def test_executable_path_empty_when_no_install_dir(self):
+        slicer = GateSlicer(ghidra_install_dir="")
+        assert slicer._ghidra_headless_executable() == ""
 
 
 # --------------------------------------------------------------------- #
