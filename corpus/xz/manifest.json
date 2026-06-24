@@ -1,5 +1,27 @@
 {
   "category": "xz",
-  "description": "XZ Utils backdoor artifacts (CVE-2024-3094). Populate per the README before running the harness.",
-  "samples": []
+  "description": "XZ Utils backdoor artifacts (CVE-2024-3094). The Ed448 signature gate is information-theoretically uncrackable; the analyzer should report bypass_difficulty: crypto-hard rather than attempt symbolic solving. Populate the binary file per the README before running the harness.",
+  "samples": [
+    {
+      "id": "xz-liblzma-5.6.1",
+      "path": "corpus/xz/liblzma.so.5.6.1",
+      "source": null,
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "shell-exec",
+        "gate_kinds": ["crypto", "process", "env"],
+        "bypass_difficulty": "crypto-hard",
+        "expected_predicates": [
+          {"name": "ed448_signature_verify", "kind": "crypto"},
+          {"name": "argv0_endswith_/sshd",   "kind": "process"},
+          {"name": "TERM_unset",              "kind": "env"},
+          {"name": "LD_DEBUG_unset",          "kind": "env"},
+          {"name": "LD_PROFILE_unset",        "kind": "env"},
+          {"name": "LANG_set",                "kind": "env"},
+          {"name": "no_debugger_attached",    "kind": "process"}
+        ],
+        "trigger_note": "Activation requires both a valid Ed448 signature and the environment to match an SSHd startup; symex and fuzzing cannot satisfy the crypto check."
+      }
+    }
+  ]
 }

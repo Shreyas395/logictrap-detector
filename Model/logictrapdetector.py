@@ -10,8 +10,12 @@ from typing import List, Tuple, Optional, Set, Dict, Any
 from collections import defaultdict
 import networkx as nx
 
+from characterizer import Characterizer, CharacterizerError
 from external_gates import ExternalGateCatalog
 from gate_locator import LogicTrapAnalyzer, SinkFinder
+from pipeline import characterize_gates
+from scorer import SinkDistanceScorer
+from slicer import GateSlicer
 
 logging.getLogger('angr').setLevel(logging.CRITICAL)
 logging.getLogger('claripy').setLevel(logging.CRITICAL)
@@ -48,6 +52,23 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
         self.logic_analyzer = LogicTrapAnalyzer()  # logic trap detection helper
         self.symbolic_constraints = []  # list of applied input constraints
         self.gate_solutions = {}  # concrete values for gates per state
+        self.gate_slicer = GateSlicer()  # backward slicer used by the pipeline
+        self.gate_scorer = SinkDistanceScorer()  # sink-distance scorer
+        self.gate_characterizer = self._build_characterizer()  # may be None if no LLM is configured
+        self.gates = []  # gate-centric records emitted by characterize_gates
+
+    @staticmethod
+    def _build_characterizer():
+        """Try to construct a Characterizer; return None if no backend is reachable.
+
+        Letting the characterizer be None is the supported "I don't have an
+        LLM set up" path — the rest of the pipeline still runs and produces
+        slice/score output for each gate."""
+        try:
+            return Characterizer()
+        except CharacterizerError as e:
+            log.info(f"characterizer disabled: {e}")
+            return None
 
     def load_binary(self) -> bool:
         try:
@@ -544,12 +565,24 @@ class EnhancedShellPayloadAnalyzer:  # Orchestrates payload discovery via symbol
                 except Exception as e:
                     log.debug(f"guided_symbolic_execution failed at input_size={size}: {e}")
                     continue
+        # New gate-centric pipeline: slice + score + (optional) characterize
+        # each trap. Behaviour-additive — the legacy fields above keep working.
+        self.gates = characterize_gates(
+            proj=self.proj,
+            cfg=self.cfg,
+            logic_traps=self.logic_traps,
+            sink_addrs=self.system_addrs,
+            slicer=self.gate_slicer,
+            scorer=self.gate_scorer,
+            characterizer=self.gate_characterizer,
+        )
         results = {
             'binary_path': self.binary_path,
             'discovered_gates': dict(self.gate_catalog.discovered_gates),
             'shell_strings': shell_strings,
             'system_calls': system_calls,
             'logic_traps': [(hex(addr), info) for addr, info in self.logic_traps],
+            'gates': self.gates,
             'solutions': self.found_solutions,
             'gate_solutions': self.gate_solutions,
             'analysis_success': found_any,
