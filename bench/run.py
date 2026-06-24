@@ -94,7 +94,7 @@ def main():
                 continue
 
             binary_path = REPO_ROOT / sample["path"]
-            print(f"\n{'=' * 60}\n[bench] {category}/{sample_id}  →  {binary_path}\n{'=' * 60}")
+            print(f"\n{'=' * 60}\n[bench] {category}/{sample_id}  ->  {binary_path}\n{'=' * 60}")
 
             result = run_sample(binary_path, args.max_input_size)
             aggregate["runs"].append({
