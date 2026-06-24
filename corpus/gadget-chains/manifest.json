@@ -1,5 +1,42 @@
 {
   "category": "gadget-chains",
-  "description": "Dormant Java deserialization gadget chains. Add per-chain subdirectories per the README.",
-  "samples": []
+  "description": "Dormant Java deserialization gadget chains. Each sample is a JAR (or pair of JARs) whose deserialization path leads to remote code execution under a minor, stealthy modification. Populate per the README before running the harness.",
+  "samples": [
+    {
+      "id": "chain-01-commons-collections",
+      "path": "corpus/gadget-chains/chain-01-commons-collections/modified.jar",
+      "source": "corpus/gadget-chains/chain-01-commons-collections/original.jar",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "deserialize",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "trivial",
+        "trigger_note": "Transformer chain reachable through a single readObject; activates without environmental checks."
+      }
+    },
+    {
+      "id": "chain-02-spring-aop",
+      "path": "corpus/gadget-chains/chain-02-spring-aop/modified.jar",
+      "source": "corpus/gadget-chains/chain-02-spring-aop/original.jar",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "deserialize",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "trivial",
+        "trigger_note": "AOP advice invocation reaches Runtime.exec via reflective dispatch."
+      }
+    },
+    {
+      "id": "chain-03-jython-runtime",
+      "path": "corpus/gadget-chains/chain-03-jython-runtime/modified.jar",
+      "source": "corpus/gadget-chains/chain-03-jython-runtime/original.jar",
+      "ground_truth": {
+        "has_payload": true,
+        "sink_class": "deserialize",
+        "gate_kinds": ["mixed"],
+        "bypass_difficulty": "trivial",
+        "trigger_note": "Embedded Jython script runs at deserialization time and reaches a JIT writable function pointer."
+      }
+    }
+  ]
 }

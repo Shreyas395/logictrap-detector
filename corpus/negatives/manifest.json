@@ -1,5 +1,96 @@
 {
   "category": "negatives",
-  "description": "Clean binaries used to measure false-positive rate. Populate per the README.",
-  "samples": []
+  "description": "Clean utility binaries used to measure false-positive rate of the gate locator and characterizer. Paths point at standard Linux system installs; samples whose path does not resolve on the runner are skipped by bench/run.py and do not count as failures.",
+  "samples": [
+    {
+      "id": "neg-coreutils-ls",
+      "path": "/usr/bin/ls",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 0,
+        "note": "Heavy on locale and dirent checks; should not be flagged as crypto/process trigger."
+      }
+    },
+    {
+      "id": "neg-coreutils-cat",
+      "path": "/usr/bin/cat",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 0,
+        "note": "Small, mostly read/write loops with no environment gating."
+      }
+    },
+    {
+      "id": "neg-coreutils-grep",
+      "path": "/usr/bin/grep",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 1,
+        "note": "Locale-aware regex engine; one or two complexity-heavy blocks are not a true positive."
+      }
+    },
+    {
+      "id": "neg-coreutils-find",
+      "path": "/usr/bin/find",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 1,
+        "note": "Filter predicates can look like gates; argv parsing is benign."
+      }
+    },
+    {
+      "id": "neg-coreutils-cp",
+      "path": "/usr/bin/cp",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 0,
+        "note": "Mode/owner copy logic; no payload."
+      }
+    },
+    {
+      "id": "neg-coreutils-mv",
+      "path": "/usr/bin/mv",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 0,
+        "note": "Rename + fallback copy; no payload."
+      }
+    },
+    {
+      "id": "neg-bash",
+      "path": "/bin/bash",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 3,
+        "note": "Bash legitimately calls system primitives in many places; a few flagged gates are expected."
+      }
+    },
+    {
+      "id": "neg-git",
+      "path": "/usr/bin/git",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 2,
+        "note": "GIT_* env vars and config-file reads create env-shaped predicates."
+      }
+    },
+    {
+      "id": "neg-ssh",
+      "path": "/usr/bin/ssh",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 2,
+        "note": "Process-checking and env-dependent behavior; should NOT flag a crypto-gated shell-exec."
+      }
+    },
+    {
+      "id": "neg-curl",
+      "path": "/usr/bin/curl",
+      "ground_truth": {
+        "has_payload": false,
+        "expected_gates_flagged_upper_bound": 2,
+        "note": "Network-heavy: many env vars + URL parsing; expected to look gate-like but benign."
+      }
+    }
+  ]
 }
